@@ -1,0 +1,6 @@
+{
+  "name": "AKA Turbo 3D Grand Prix Studio",
+  "description": "Simulateur Gamebuino AKA (320x240 RGB565), correcteur de sprites 3/4 arrière, stands pit stop spécialisés, animations des 6 circuits et serveur de course multijoueur temps réel cross-plateforme (AKA ESP32-S3, PC SDL2, Web).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

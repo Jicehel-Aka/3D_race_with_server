@@ -4,7 +4,7 @@ export interface CodePatchFile {
   id: string;
   filename: string;
   targetPathInRepo: string;
-  category: 'sprites' | 'pitstop' | 'circuits' | 'multiplayer';
+  category: 'pitstop' | 'circuits' | 'sprites' | 'multiplayer';
   titleFr: string;
   summaryFr: string;
   flashImpact: string;
@@ -13,192 +13,96 @@ export interface CodePatchFile {
 
 export const CPP_PATCH_FILES: CodePatchFile[] = [
   {
-    id: 'car_art_rear3q',
-    filename: 'rigid_3d_turn_aka.cpp',
-    targetPathInRepo: 'main/game/race.cpp + main/game/render.cpp + main/game/car_art.h',
-    category: 'sprites',
-    titleFr: 'Rotation 3D Hybride Rigide + Coordonnées Exactes des Feux 3D (0 Ko RAM)',
-    summaryFr:
-      'Combine un maillage 3D GT recalibré au pixel près sur la silhouette basse de Stage 6 (nez plongeant y = 31 -> 45, toit horizontal y = 5, poupe GT unifiée) avec la rétro-projection Z-buffer de la vraie texture 3/4 (2c7e371) de 0° à 29°, sans aucun fondu ni déformation 2D.',
-    flashImpact: 'Même empreinte Flash 7 paliers · Avant bas fidèle · 0 morphing 2D',
-    code: `// ============================================================================
-// 1. main/game/car_art.h — Boîtes de feux projetées en 3D sur le modèle 3D Hybride
-// ============================================================================
-// À 0° (176x84) comme à 29° (224x84), il s'agit des mêmes feux rectangulaires :
-static constexpr int16_t kLampRear[8] = {
-    12, 43, 45, 52,   131, 43, 164, 52
-};
-static constexpr int16_t kLamp3q[CAR_COUNT][8] = {
-    { 82, 42, 110, 51,  175, 42, 204, 50 }, // VIPER .. YOU (géométrie 3D Hybride)
-    { 82, 42, 110, 51,  175, 42, 204, 50 },
-    { 82, 42, 110, 51,  175, 42, 204, 50 },
-    { 82, 42, 110, 51,  175, 42, 204, 50 },
-    { 82, 42, 110, 51,  175, 42, 204, 50 },
-    { 82, 42, 110, 51,  175, 42, 204, 50 },
-    { 82, 42, 110, 51,  175, 42, 204, 50 },
-    { 82, 42, 110, 51,  175, 42, 204, 50 },
-};
-
-// ============================================================================
-// 2. main/game/race.cpp — Inertie angulaire fluide de la caisse en virage
-// ============================================================================
-p.steerVis += (steer - p.steerVis) * fminf(1.0f, dt * 5.4f);
-
-// ============================================================================
-// 3. main/game/render.cpp — Paliers angulaires réguliers (0° -> 29°, 0 morphing)
-// ============================================================================
-// Pas constant de 4.83° par palier Z-buffer 3D Hybride (aucun mix565 entre images) :
-static const float kRigidStep[CAR_ART_MID + 1] = {
-    0.09f, 0.22f, 0.35f, 0.49f, 0.63f, 0.78f
-};
-int stage = 0;
-float asv = fabsf(c.steerVis);
-while (stage <= CAR_ART_MID && asv >= kRigidStep[stage]) ++stage;
-bool flip = (c.steerVis > 0.0f);`,
-  },
-  {
-    id: 'import_car_art_py',
-    filename: 'generate_unified_3d_car_art.py',
-    targetPathInRepo: 'tools/generate_unified_3d_car_art.py',
-    category: 'sprites',
-    titleFr: 'tools/generate_unified_3d_car_art.py — Générateur 3D Hybride Calé sur Stage 6 (2c7e371)',
-    summaryFr:
-      'Calibre le maillage 3D GT sur la silhouette exacte de Stage 6 (avant plongeant bas y = 31 -> 45, toit plat y = 5, poupe GT unifiée) et rétro-projette en Z-buffer la vraie texture nettoyée de Stage 6 (avec test de visibilité ZBUF_STAGE6) pour générer des vues de 0° à 29° sans bosse avant ni morphing.',
-    flashImpact: 'Génère car_art.cpp complet · 0 dépendance externe · Avant 3/4 exact',
-    code: `#!/usr/bin/env python3
-"""
-tools/generate_unified_3d_car_art.py — Générateur 3D Hybride Z-Buffer (Modèle GT 3/4 2c7e371)
-- Silhouette avant abaissée et recalibrée au pixel près sur Stage 6 (y = 31 -> 34 -> 39 -> 45, toit plat y = 5).
-- Rétro-projection perspective 3D de la vraie texture Stage 6 nettoyée sur les flancs, le capot bas,
-  le montant A, les vitres latérales et les roues, combinée à la poupe 3D symétrique unifiée.
-- Reflet continu en espace monde 3D sur la lunette arrière à persiennes.
-"""
-import math
-
-W0, W3, H = 176, 224, 84
-KEY_BGR565 = 0xF81F  # Magenta transparent Gamebuino AKA
-YAW_MAX_DEG = 29.0
-CAM_DIST, Z_PIV = 7.60, 0.65
-FOCAL = 82.5 * (CAM_DIST - Z_PIV)
-HOR_Y, CAM_Y = 36.0, 0.565
-
-def rgb_to_bgr565(r, g, b):
-    ri = max(0, min(255, int(r))) >> 3
-    gi = max(0, min(255, int(g))) >> 2
-    bi = max(0, min(255, int(b))) >> 3
-    val = (bi << 11) | (gi << 5) | ri
-    return 0xF81E if val == KEY_BGR565 else val
-
-def project_point(v, cy, sy, cx_scr, SS=2):
-    dx = v[0]
-    dz = v[2] - Z_PIV
-    xw = dx * cy - dz * sy
-    zw = dx * sy + dz * cy
-    zc = CAM_DIST + zw
-    focal = FOCAL * SS
-    sx = cx_scr + (xw * focal) / zc
-    sy_scr = (HOR_Y * SS) - ((v[1] - CAM_Y) * focal) / zc
-    return sx, sy_scr, zc, xw, v[1], zw
-
-# Angles rigides exportés dans main/game/car_art.cpp (0 morphing 2D) :
-ANGLES_7_DEG = [0.0, 4.83, 9.67, 14.50, 19.33, 24.17, 29.0]`,
-  },
-  {
-    id: 'pitstop_v12',
-    filename: 'pitstop_3bays_aka.cpp',
-    targetPathInRepo: 'main/game/race.h + race.cpp + render.cpp',
+    id: 'pit_technicians_fix',
+    filename: 'pit_technicians_fix.cpp',
+    targetPathInRepo: 'main/game/race.cpp + main/game/render.cpp + tools/import_technicians.py',
     category: 'pitstop',
-    titleFr: 'Voie des Stands Séparée à 3 Box Spécialisés + Mécaniciens + Lollipop + Bouton L1',
+    titleFr: 'Chorégraphie des Techniciens aux Stands, Bandes Sol Fixes & Cadrage HUD',
     summaryFr:
-      'Remplace le simple rectangle jaune peint sur la voie de droite par une vraie voie des stands sécurisée derrière un muret béton (x = 1.04..1.98) avec 3 box distincts (N2O Express, Pneus & Géométrie, Garage Moteur Complet), mécaniciens animés, panneau Lollipop GO! avec boost de relance et limiteur L1 + vibrations Gamebuino AKA.',
-    flashImpact: '+2.4 Ko code · 0 octets RAM dynamique',
+      'Aligne main/game/race.cpp et main/game/render.cpp sur le comportement validé : (1) tous les techniciens et le Lollipop attendent à l’extérieur sur le tablier des stands (x = 2.63..2.74 sous auvent), (2) arrivée autour de la voiture à l’arrêt (< 4 km/h) avec contournement du nez avant sans traverser la carrosserie, (3) bandes au sol 100 % fixes (zéro défilement temporel), (4) travail (TECH_WORK + étincelles) uniquement une fois à côté de la voiture puis éloignement immédiat dès la fin de l’intervention, (5) largeur dynamique du cadre HUD des stands (fini le texte qui dépasse sur Neon City, etc.).',
+    flashImpact: '+48 octets état stand · Bandes fixes & HUD sans débordement',
     code: `// ============================================================================
-// main/game/race.h — Constantes & état des 3 stands spécialisés (v1.2)
+// 1. main/game/race.h & race.cpp — Automate 4 phases par box (Stand 2 & Stand 3)
 // ============================================================================
-constexpr int   PIT_ENTRY_FIRST = 4;
-constexpr int   PIT_WALL_FIRST  = 10, PIT_WALL_END = 38, PIT_EXIT_END = 44;
-constexpr float PIT_WALL_X      = 1.04f, PIT_LANE_X0 = 1.12f, PIT_LANE_X1 = 1.96f;
+enum PitCrewPhase : uint8_t {
+    PIT_IDLE_OUTSIDE = 0, // Attente calme sur le tablier extérieur (x = 2.63..2.74)
+    PIT_WALKING_IN   = 1, // Marche vers les 4 roues / capot autour de la voiture arrêtée
+    PIT_WORKING      = 2, // Intervention clé à chocs uniquement à côté de la voiture
+    PIT_WALKING_OUT  = 3  // Éloignement immédiat vers l'extérieur dès la fin du travail
+};
 
-// 3 stands spécialisés le long de la voie des stands :
-// 1. N2O Express (segs 11..18)  : passage rapide < 95 km/h -> recharge cryo N2O sans arrêt complet
-// 2. Pneus & Train (segs 19..26): arrêt < 38 km/h (~1.2s)  -> usure pneus à 0 + supprime pullDir
-// 3. Garage Moteur (segs 27..36): arrêt < 30 km/h          -> révision moteur complète + Lollipop GO!
-enum PitBayKind : uint8_t { BAY_NONE = 0, BAY_NITRO = 1, BAY_TYRES = 2, BAY_ENGINE = 3 };
+struct PitBayCrew {
+    PitCrewPhase phase = PIT_IDLE_OUTSIDE;
+    float progress     = 0.0f; // 0 = extérieur du stand, 1 = en poste autour de la voiture
+    float workTimer    = 0.0f;
+    float workReq      = 2.0f;
+    float anchorZ      = 0.0f;
+    float anchorX      = 2.10f;
+};
 
-// Champs à ajouter dans class Race (race.h) :
-//   float tyreWear = 0.0f;
-//   uint8_t activeBay = BAY_NONE;
-//   bool pitLimiter = true;      // activable/désactivable avec BTN_L1 sur Gamebuino AKA
-//   uint8_t lollipop = 0;        // 0 caché, 1 STOP, 2 READY, 3 GO!
-//   float lollipopGoT = 0.0f, launchBoostT = 0.0f;
+// Dans update_pit_lane(Race& r, float dt) :
+// - Déclenchement dès r.speedKmh() < 4.0f dans Stand 2 (PNEUS) ou Stand 3 (MOTEUR) :
+//   crew.phase = PIT_WALKING_IN; crew.anchorZ = r.carZ(r.player()); crew.anchorX = clamp(p.x, 1.84f, 2.34f);
+// - Réparation et workTimer avancent UNIQUEMENT pendant (crew.phase == PIT_WORKING).
+// - Dès que (crew.workTimer >= crew.workReq), même voiture encore à 0 km/h :
+//   crew.phase = PIT_WALKING_OUT; r.lollipop = LOLLI_GO; r.servicedThisStop = true;
+//   -> les techniciens s'éloignent immédiatement sans reboucler tant que la voiture ne repart pas.
 
 // ============================================================================
-// main/game/race.cpp — Logique des 3 stands + Limiteur L1 + Boost Lollipop
+// 2. main/game/render.cpp — Bandes au sol 100 % fixes (suppression de s_time)
 // ============================================================================
-void Race::updatePitStops(float dt, const plat::Input& in) {
-    Car& p = player();
-    if (autopilot || demo || !started || p.retired) { pitting = false; activeBay = BAY_NONE; return; }
+// Dans draw_pit_ground(const PSeg& ps) :
+//   bool boxStripe = (ps.idx & 1) == 0; // FIXE dans le repère monde (aucun terme s_time !)
+//   uint16_t boxCol = inNitro ? (boxStripe ? rgb(32,188,242) : rgb(22,126,184))
+//                   : inTyres ? (boxStripe ? rgb(232,178,30) : rgb(156,118,22))
+//                   :           (boxStripe ? rgb(218,48,48)  : rgb(148,34,38));
+//   // Tablier béton extérieur (x = 2.48 .. 3.18) pour l'attente des techniciens sous auvent
 
-    if (in.pressed & plat::BTN_L1) {
-        pitLimiter = !pitLimiter;
-        plat::playSfx(plat::SFX_MENU_MOVE);
-    }
+// ============================================================================
+// 3. main/game/render.cpp — Approche autour de la voiture, travail & départ
+// ============================================================================
+static inline float smooth01(float v) {
+    float c = fminf(1.0f, fmaxf(0.0f, v));
+    return c * c * (3.0f - 2.0f * c);
+}
 
-    int pidx = track.indexAt(carZ(p));
-    bool onApron = (pidx >= PIT_ENTRY_FIRST && pidx <= PIT_EXIT_END && p.x > PIT_WALL_X && p.x < PIT_LANE_X1 + 0.10f);
-    float kmh = speedKmh();
+// Pour chaque mécanicien m du box b (tous au repos à idleX = 2.63f..2.74f, dir = -1) :
+// - Mécaniciens flanc droit / capot / Lollipop : interpolation directe (idleZ, idleX) <-> (targetZ, targetX)
+// - Mécaniciens flanc gauche : trajectoire en 3 tronçons devant le pare-chocs avant (noseZ = anchorZ + 545.0f)
+//   afin de contourner la voiture sans jamais la traverser :
+//     u in [0.00..0.34] : (idleZ, idleX)     -> (noseZ, rightClearX)
+//     u in [0.34..0.70] : (noseZ, rightClearX) -> (noseZ, leftClearX)
+//     u in [0.70..1.00] : (noseZ, leftClearX)  -> (targetZ, targetX)
+// - Pose : TECH_WORK + étincelles UNIQUEMENT si (crew.phase == PIT_WORKING && u >= 0.99f) ;
+//          TECH_TYRE uniquement à l'aller (PIT_WALKING_IN && u < 0.82f) ;
+//          TECH_WALK_A / TECH_WALK_B pendant l'approche et l'éloignement (dir = +1 au retour) ;
+//          TECH_IDLE au repos à l'extérieur.
+// - Seuil d'affichage : (wAt >= 9.0f && wAt <= 365.0f) avec interpolation continue dans le PSeg.
 
-    if (onApron && pitLimiter && kmh > 85.0f) {
-        p.speed = fmaxf(85.0f / 240.0f * MAX_SPEED, p.speed - MAX_SPEED * 0.9f * dt);
-    }
+// ============================================================================
+// 4. main/game/render.cpp — Cadrage dynamique du HUD des stands (Neon City, etc.)
+// ============================================================================
+void draw_pit_hud_box(const char* bayTitle, const char* statsLine, bool goGreen, int lbRightX) {
+    int tw1 = measure_text_px(bayTitle);   // ex: "STAND 3 - MOTEUR (ARRET 0 KM/H)"
+    int tw2 = measure_text_px(statsLine);  // ex: "ENG 100% - TYR 100% - N2O 100%"
+    int availX0 = lbRightX + 6;
+    int maxBoxW = SCREEN_W - 6 - availX0;
+    int boxW    = std::min(maxBoxW, std::max(tw1, tw2) + 18); // +9 px de marge de chaque côté
+    int boxX    = availX0 + std::max(0, (maxBoxW - boxW) / 2);
+    int boxY    = 44, boxH = 34;
 
-    if (!onApron || pidx < PIT_WALL_FIRST || pidx > PIT_WALL_END) {
-        if (lollipop == 3 && lollipopGoT > 0.0f && (in.held & plat::BTN_A)) {
-            launchBoostT = 1.35f; lollipopGoT = 0.0f;
-            plat::playSfx(plat::SFX_NITRO);
-        }
-        pitting = false; activeBay = BAY_NONE;
-        if (!onApron) lollipop = 0;
-        return;
-    }
+    fill_rect_alpha(boxX, boxY, boxW, boxH, rgb(10, 15, 28), 224);
+    stroke_rect(boxX, boxY, boxW, boxH, goGreen ? rgb(74, 222, 128) : rgb(250, 204, 21));
+    draw_text_clipped(bayTitle,  boxX + (boxW - tw1) / 2, boxY + 5,  boxW - 10, goGreen ? rgb(74,222,128) : rgb(253,224,71));
+    draw_text_clipped(statsLine, boxX + (boxW - tw2) / 2, boxY + 19, boxW - 10, rgb(226, 232, 240));
+}
 
-    static const float kRepair[DIFF_COUNT] = { 0.40f, 0.30f, 0.24f, 0.19f };
-
-    if (pidx >= 11 && pidx <= 18) {                 // STAND 1 : N2O EXPRESS (< 95 km/h)
-        activeBay = BAY_NITRO;
-        if (kmh <= 95.0f && nitro < 1.0f) {
-            pitting = true;
-            nitro = fminf(1.0f, nitro + dt * 1.35f);
-        } else pitting = false;
-    } else if (pidx >= 19 && pidx <= 26) {          // STAND 2 : PNEUS & GEOMETRIE (< 38 km/h)
-        activeBay = BAY_TYRES;
-        if (kmh <= 38.0f && (tyreWear > 0.01f || pullDir != 0)) {
-            pitting = true; lollipop = 1;
-            tyreWear = fmaxf(0.0f, tyreWear - dt * 0.78f);
-            if (tyreWear <= 0.0f) { pullDir = 0; lollipop = 3; lollipopGoT = 1.8f; ev.pitDone = true; }
-        } else pitting = false;
-    } else if (pidx >= 27 && pidx <= 36) {          // STAND 3 : GARAGE MOTEUR COMPLET (< 30 km/h)
-        activeBay = BAY_ENGINE;
-        if (kmh <= 30.0f && (damage > 0.005f || tyreWear > 0.01f || nitro < 0.99f)) {
-            if (!pitting) { pitting = true; pitT = 0; ev.pitStart = true; }
-            pitT += dt;
-            damage   = fmaxf(0.0f, damage - kRepair[difficulty] * dt);
-            tyreWear = fmaxf(0.0f, tyreWear - 0.55f * dt);
-            nitro    = fminf(1.0f, nitro + 0.65f * dt);
-            lollipop = damage < 0.08f ? 2 : 1;
-            if (damage <= 0.0f && tyreWear <= 0.0f && nitro >= 0.99f) {
-                pullDir = 0; pitting = false;
-                lollipop = 3; lollipopGoT = 2.0f; ev.pitDone = true;
-            }
-        } else {
-            if (lollipop == 3 && lollipopGoT > 0.0f && (in.held & plat::BTN_A)) {
-                launchBoostT = 1.35f; lollipopGoT = 0.0f;
-                plat::playSfx(plat::SFX_NITRO);
-            }
-            pitting = false;
-        }
-    }
-}`,
+// ============================================================================
+// 5. tools/import_technicians.py — Suppression de la bavure magenta sous les bottes
+// ============================================================================
+//   shadow_magenta = (a[:,:,0] > 95) & (a[:,:,1] < 45) & (a[:,:,2] > 95) & (abs(a[:,:,0] - a[:,:,2]) < 75)
+//   key = key | shadow_magenta
+//   rgb_clean = np.where(key[..., None], 0, a).astype(np.uint8)  # évite le mélange #FF00FF dans Image.BOX`,
   },
   {
     id: 'circuit_anim_lut',
@@ -207,10 +111,10 @@ void Race::updatePitStops(float dt, const plat::Input& in) {
     category: 'circuits',
     titleFr: 'Animations Temps Réel des 6 Circuits + Tunnels SEGF_TUNNEL + LUT sin8 60 FPS',
     summaryFr:
-      'Ajoute une table int16_t kSin8[256] (économise ~1.2 ms/frame sur ESP32-S3 en supprimant les 1280 sinf() de glacier_far), anime les aurores boréales de Glacier Run, le faisceau tournant du phare et les projecteurs de Night Harbor, le monorail et les fenêtres de Neon City, les vagues/voiliers de Palm Bay, la télécabine/neige d’Alpine Pass et active enfin le flag SEGF_TUNNEL !',
+      'Ajoute une table int16_t s_sin8[256] (économise ~1.2 ms/frame sur ESP32-S3), anime les aurores boréales de Glacier Run, le faisceau tournant du phare et les projecteurs de Night Harbor, le monorail et les fenêtres de Neon City, les voiliers de Palm Bay, la télécabine d’Alpine Pass et active le rendu des portiques SEGF_TUNNEL.',
     flashImpact: '+512 octets LUT · Gain +1.2 ms/frame sur ESP32-S3',
     code: `// ============================================================================
-// main/game/render.cpp — Table trigonométrique fixe 8-bit pour ESP32-S3 (0 sinf par colonne !)
+// main/game/render.cpp — Table trigonométrique fixe 8-bit pour ESP32-S3 (0 sinf par colonne)
 // ============================================================================
 static int16_t s_sin8[256]; // valeurs dans [-256..+256]
 static bool    s_lutReady = false;
@@ -223,67 +127,7 @@ static void init_fast_lut() {
 }
 inline int fastSin(int idx) { return s_sin8[idx & 255]; }
 
-// ---- Animations temps réel dans draw_sky(const Race& r, float time) ---------
-void draw_sky_animated_overlays(const Race& r, float time, int sh) {
-    init_fast_lut();
-    const int theme = r.track.theme;
-    const int t8 = (int)(time * 42.0f);
-
-    if (theme == THEME_GLACIER) {
-        // Rideaux d'aurores boréales ondulants en temps réel (2px step -> < 0.18 ms sur ESP32-S3)
-        for (int x = 0; x < W; x += 2) {
-            int ph = (((x + sh) & (PANO_W - 1)) * 256) / PANO_W;
-            int yc = 32 + ((11 * fastSin(ph * 2 + t8)) >> 8) + ((5 * fastSin(ph * 5 - t8 * 2)) >> 8);
-            int mix = 128 + (fastSin(ph * 3 + (t8 >> 1)) >> 1);
-            uint16_t col = lerp(rgb(64, 255, 168), rgb(156, 92, 255), mix);
-            for (int dy = 0; dy < 26; dy += 2) {
-                int a = ((26 - dy) * 115) / 26;
-                blendRect(x, yc + dy, 2, 2, col, a);
-            }
-        }
-    } else if (theme == THEME_CITY || theme == THEME_HARBOR) {
-        // Projecteurs balayant le ciel nocturne
-        for (int b = 0; b < 2; ++b) {
-            int basePx = b ? 760 : 180;
-            int bx = ((basePx - sh) & (PANO_W - 1));
-            if (bx > 680) bx -= PANO_W;
-            int sweep = (fastSin(t8 / (b ? 3 : 2) + b * 90) * 190) >> 8; // -190..+190
-            uint16_t beamCol = theme == THEME_CITY ? (b ? rgb(255, 70, 210) : rgb(60, 235, 255))
-                                                   : rgb(205, 228, 248);
-            for (int dy = 0; dy < HORIZON - 10; dy += 2) {
-                int cx = bx + ((sweep * dy) >> 8);
-                int w = 3 + dy / 8;
-                blendRect(cx - w / 2, HORIZON - 2 - dy, w, 2, beamCol, 26);
-            }
-        }
-    } else if (theme == THEME_COAST) {
-        // Oiseaux marins battant des ailes devant le soleil couchant
-        for (int b = 0; b < 5; ++b) {
-            int bx = ((180 + b * 46 + (int)(time * 22.0f) - sh) & (PANO_W - 1));
-            if (bx >= W - 4) continue;
-            int by = 32 + b * 6 + (fastSin(t8 + b * 40) >> 6);
-            int flap = fastSin(t8 * 4 + b * 55) >= 0 ? 1 : 0;
-            for (int dx = -3; dx <= 3; ++dx)
-                pset(bx + dx, by - abs(dx) * flap + (dx == 0 ? 1 : 0), rgb(38, 18, 48));
-        }
-    }
-}
-
-// ---- Faisceau tournant du Phare (Night Harbor / Palm Bay) dans draw_prop() ---
-if (pr.spr == SPR_LIGHTHOUSE && dw > 3 && ps.fog < 230) {
-    int gx = x + dw / 2, gy = y + (int)(41 * destH / 230);
-    float dir = sinf(time * 2.1f);
-    int len = (int)(dw * 2.4f * fabsf(dir));
-    int sgn = dir >= 0 ? 1 : -1;
-    for (int bx = 0; bx < len; bx += 2) {
-        int sp = 1 + bx / 6;
-        int a = 120 - (bx * 105) / (len + 1);
-        if (gy - sp < ps.clip)
-            blendRect(gx + sgn * bx, gy - sp, 2, sp * 2 + 1, rgb(255, 236, 150), a);
-    }
-}
-
-// ---- Portiques & Éclairage des Tunnels (active SEGF_TUNNEL de track.h !) ----
+// ---- Portiques & Éclairage des Tunnels (active SEGF_TUNNEL de track.h) ------
 void draw_tunnel_arch(const PSeg& ps, const Theme& th, int themeId) {
     if (ps.w1 < 4.0f) return;
     int cx = (int)ps.x1, w = (int)(ps.w1 * 1.26f);
@@ -302,107 +146,61 @@ void draw_tunnel_arch(const PSeg& ps, const Theme& th, int themeId) {
 }`,
   },
   {
-    id: 'net_mp_aka_esp32',
-    filename: 'net_mp_aka.cpp',
-    targetPathInRepo: 'main/game/net_mp_aka.cpp (ESP32-S3) + host/net_mp_pc.cpp',
-    category: 'multiplayer',
-    titleFr: 'Client Multijoueur Gamebuino AKA (ESP32-S3 Wi-Fi WebSocket Binaire 20 octets)',
+    id: 'fixed_point_3d_esp32s3',
+    filename: 'raster_q16_esp32s3.h',
+    targetPathInRepo: 'main/game/raster_q16.h (Architecture 3D Virgule Fixe ESP32-S3)',
+    category: 'sprites',
+    titleFr: 'Référence Architecture Vraie 3D Virgule Fixe Q16.16 (ESP32-S3 @ 240 MHz)',
     summaryFr:
-      'Se connecte directement au serveur de course WebSocket (server.ts /ws/race?mode=binary) depuis la Gamebuino AKA via esp_websocket_client ou depuis le build PC SDL2. Zéro allocation JSON en course : trame binaire fixe 0xA4 (20 octets envoi) / 0xA5 (164 octets réception à 20 Hz).',
-    flashImpact: 'Bande passante < 3.4 Ko/s · 0 malloc par frame',
+      'Squelette de rastériseur de triangles flat/Gouraud en virgule fixe Q16.16 sans aucun float ni division par pixel (table réciproque 1/dy et 1/z sur 1024 entrées), conçu pour tenir 8 voitures low-poly (~140 triangles) à 60 FPS constants sur Gamebuino AKA.',
+    flashImpact: '2 Ko LUT réciproque · 0 float dans la boucle interne scanline',
     code: `// ============================================================================
-// main/game/net_mp_aka.cpp — Client Multijoueur Temps Réel Gamebuino AKA (ESP-IDF 5.5)
-// Compatible avec le serveur WebSocket de cet atelier (/ws/race?mode=binary)
-// Dépendance CMakeLists.txt : REQUIRES esp_wifi esp_event nvs_flash esp_websocket_client
+// Architecture Vraie 3D Temps Réel en Virgule Fixe Q16.16 sur ESP32-S3 (240 MHz)
+// - FPU matériel LX7 : rapide sur fadd.s/fmul.s (sommets), mais lent sur fdiv et ftoi par pixel.
+// - En Q16.16 + LUT réciproque dans la boucle interne scanline : 0 float, 0 division par pixel,
+//   3x à 5x plus rapide sur le remplissage des triangles + Z-buffer 16-bit partiel !
 // ============================================================================
-#include "race.h"
-#include "esp_websocket_client.h"
-#include "esp_log.h"
-#include <string.h>
+#pragma once
+#include <stdint.h>
 
-#pragma pack(push, 1)
-struct AkaCarPacket {           // 20 octets exacts (AKA_BIN_PACKET_SIZE)
-    uint8_t  magic;             // 0xA4
-    uint8_t  slotAndFlags;      // bits 0..2: slot | bit3: brake, bit4: nitro, bit5: pit, bit6: retired, bit7: human
-    float    dist;
-    float    x;
-    float    speed;
-    int16_t  steerMilli;        // steerVis * 1000
-    uint16_t damageMilli;       // damage * 1000
-    uint8_t  place;
-    uint8_t  driverLook;
-};
+using fix16_t = int32_t; // Q16.16 : 1.0 = 65536
 
-struct AkaRoomSnapshot {        // 164 octets exacts diffusés à 20 Hz par server.ts
-    uint8_t      magic;         // 0xA5
-    uint8_t      phaseAndTrack; // bits 0..1: LOBBY/COUNTDOWN/RACING/RESULTS | bits 2..5: trackId
-    uint16_t     raceTimeCs;    // centièmes de seconde
-    AkaCarPacket cars[CAR_COUNT];
-};
-#pragma pack(pop)
+struct Vec3x { int16_t x, y, z; }; // sommets locaux voiture en Q8.8 (~6 octets/sommet)
+struct TriFlat { uint8_t i0, i1, i2, colorIdx; };
 
-static esp_websocket_client_handle_t s_ws = nullptr;
-static volatile bool s_hasSnap = false;
-static AkaRoomSnapshot s_latestSnap{};
-static int s_mySlot = CAR_COUNT - 1;
+// Table réciproque précalculée : kRecip[d] = (1 << 24) / d pour d in 1..511 (évite toute division !)
+extern const uint32_t kRecip512[512];
 
-static void on_ws_event(void*, esp_event_base_t, int32_t event_id, void* event_data) {
-    auto* d = (esp_websocket_event_data_t*)event_data;
-    if (event_id == WEBSOCKET_EVENT_DATA && d->op_code == 0x02 /* binary */) {
-        if (d->data_len == sizeof(AkaRoomSnapshot) && (uint8_t)d->data_ptr[0] == 0xA5) {
-            memcpy(&s_latestSnap, d->data_ptr, sizeof(AkaRoomSnapshot));
-            s_hasSnap = true;
-        }
-    }
-}
-
-void net_mp_connect(const char* serverHost, const char* roomCode, const char* callsign) {
-    static char uri[192];
-    snprintf(uri, sizeof(uri),
-             "wss://%s/ws/race?mode=binary&room=%s&platform=AKA&name=%s",
-             serverHost, roomCode, callsign);
-
-    esp_websocket_client_config_t cfg = {};
-    cfg.uri = uri;
-    cfg.buffer_size = 512;
-    cfg.reconnect_timeout_ms = 2000;
-    s_ws = esp_websocket_client_init(&cfg);
-    esp_websocket_register_events(s_ws, WEBSOCKET_EVENTS, on_ws_event, nullptr);
-    esp_websocket_client_start(s_ws);
-}
-
-// Appeler à 20 Hz (toutes les 3 frames à 60 FPS) pendant ST_RACING
-void net_mp_sync(Race& r) {
-    if (!s_ws || !esp_websocket_client_is_connected(s_ws)) return;
-
-    const Car& p = r.player();
-    uint8_t flags = (p.braking ? 1 : 0) | (r.nitroOn ? 2 : 0) | (r.pitting ? 4 : 0) | (p.retired ? 8 : 0);
-    AkaCarPacket out = {
-        0xA4,
-        (uint8_t)((s_mySlot & 7) | (flags << 3)),
-        p.dist, p.x, p.speed,
-        (int16_t)(r.steer * 1000.0f),
-        (uint16_t)(r.damage * 1000.0f),
-        (uint8_t)p.place,
-        (uint8_t)p.look
-    };
-    esp_websocket_client_send_bin(s_ws, (const char*)&out, sizeof(out), pdMS_TO_TICKS(5));
-
-    if (s_hasSnap) {
-        s_hasSnap = false;
-        for (int i = 0; i < CAR_COUNT; ++i) {
-            if (i == s_mySlot) continue;
-            const AkaCarPacket& sc = s_latestSnap.cars[i];
-            Car& c = r.cars[i];
-            c.dist     += (sc.dist - c.dist) * 0.45f; // interpolation fluide sans saccade
-            c.x        += (sc.x - c.x) * 0.45f;
-            c.speed     = sc.speed;
-            c.steerVis  = sc.steerMilli / 1000.0f;
-            c.braking   = (sc.slotAndFlags >> 3) & 1;
-            c.place     = sc.place;
-            c.look      = sc.driverLook & 7;
+inline void draw_span_z16(uint16_t* fbRow, uint16_t* zRow, int x0, int x1,
+                          uint32_t zFixed, int32_t dzDx, uint16_t color565) {
+    for (int x = x0; x < x1; ++x, zFixed += dzDx) {
+        uint16_t z16 = (uint16_t)(zFixed >> 8);
+        if (z16 < zRow[x]) {
+            zRow[x]  = z16;
+            fbRow[x] = color565;
         }
     }
 }`,
+  },
+  {
+    id: 'import_car_art_py',
+    filename: 'generate_unified_3d_car_art.py',
+    targetPathInRepo: 'tools/generate_unified_3d_car_art.py',
+    category: 'sprites',
+    titleFr: 'Générateur Validé 3D Hybride (7 Paliers AKA + 19 Angles Z-Buffer)',
+    summaryFr:
+      'Version validée et verrouillée du générateur 3D Hybride : maillage GT recalibré sur Stage 6 (nez plongeant y = 31 -> 45, toit plat y = 5, paroi latérale symétrique) et rétro-projection Z-buffer de la vraie texture 3/4 de 0° à 29°.',
+    flashImpact: 'Validé · Zéro morphing 2D · Produit unified_3d_car_art.png',
+    code: `#!/usr/bin/env python3
+"""
+tools/generate_unified_3d_car_art.py — Version Validée (3D Hybride Z-Buffer)
+Utilisation avec l'importateur du dépôt :
+  python3 tools/generate_unified_3d_car_art.py
+  python3 tools/import_car_art.py --atlas7 public/assets/unified_3d_car_art.png main/game/car_art.cpp
+"""
+W0, W3, H = 176, 224, 84
+KEY_BGR565 = 0xF81F
+YAW_MAX_DEG = 29.0
+ANGLES_7_DEG = [0.0, 4.83, 9.67, 14.50, 19.33, 24.17, 29.0]`,
   },
 ];

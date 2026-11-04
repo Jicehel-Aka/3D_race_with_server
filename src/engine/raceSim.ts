@@ -7,9 +7,6 @@ import {
   PIT_BAY_NITRO,
   PIT_BAY_TYRES,
   PIT_EXIT_END,
-  PIT_LANE_X0,
-  PIT_LANE_X1,
-  PIT_V11,
   PIT_WALL_END,
   PIT_WALL_FIRST,
   PIT_WALL_X,
@@ -22,8 +19,35 @@ import {
   type ParsedRoad,
   type RoomStatePayload,
 } from '../shared/raceProtocol';
-import type { SpriteMode } from './carArt3D';
 import { synthAudio } from './synthAudio';
+
+// Pit lane v1.2 geometry with outer stand apron for waiting technicians
+export const PIT_PRE = 12;
+export const PIT_ENTRY = -PIT_PRE;
+export const PIT_WALL_START_REPO = 19; // concrete wall begins at second bay (easy open entry)
+export const PIT_STRIP_W = 0.64;       // inner safety margin between pit wall (1.04) and box left line (1.72)
+
+export function pitIdxOf(segIdx: number, segCount: number): number {
+  return segIdx >= segCount - PIT_PRE ? segIdx - segCount : segIdx;
+}
+
+export function pitTaperAt(pitIdx: number): number {
+  if (pitIdx < PIT_WALL_START_REPO) {
+    return Math.max(0, Math.min(1, (pitIdx - PIT_ENTRY) / (PIT_WALL_START_REPO - PIT_ENTRY)));
+  }
+  if (pitIdx > PIT_WALL_END) {
+    return Math.max(0, Math.min(1, 1 - (pitIdx - PIT_WALL_END) / (PIT_EXIT_END - PIT_WALL_END)));
+  }
+  return 1;
+}
+
+export function pitOuterAt(taper: number): number {
+  return 1.12 + 1.46 * taper; // 2.58 at full width (box white border ax1 = 2.48, outer stand apron 2.48..3.18)
+}
+
+export function pitInnerAt(pitIdx: number): number {
+  return pitIdx < PIT_WALL_START_REPO ? 1.07 : 1.08 + PIT_STRIP_W * pitTaperAt(pitIdx);
+}
 
 export interface InputState {
   up: boolean;
@@ -93,16 +117,41 @@ export interface ParticleFx {
 
 export type ActivePitBay = 'NONE' | 'NITRO' | 'TYRES' | 'ENGINE' | 'MID_NITRO';
 
+export type PitCrewPhase = 'IDLE_OUTSIDE' | 'WALKING_IN' | 'WORKING' | 'WALKING_OUT';
+
+export interface PitBayCrewState {
+  phase: PitCrewPhase;
+  progress: number;     // 0.0 = waiting outside, 1.0 = in position around stopped car
+  workTimer: number;    // elapsed work time once beside the car
+  workRequired: number; // total work duration once beside the car
+  anchorZ: number;      // world Z of the stopped car
+  anchorX: number;      // lateral X of the stopped car
+  startDamage: number;
+  startTyreWear: number;
+  startNitro: number;
+}
+
 export interface SimFeaturesConfig {
-  spriteMode: SpriteMode;
-  subStageBlend: boolean;
-  steerVisSmoothRate: number;
-  pitModeV12: boolean;
+  // Only undecided feature proposals remain toggleable; 3D-Hybrid cars & 3-Bay Pit Stops are now locked in!
   circuitAnimV12: boolean;
   compactHudL1: boolean;
 }
 
 export type GameScreenState = 'TITLE' | 'COUNTDOWN' | 'RACING' | 'FINISHED' | 'RESULTS';
+
+function createInitialBayCrew(bayStartSeg: number): PitBayCrewState {
+  return {
+    phase: 'IDLE_OUTSIDE',
+    progress: 0,
+    workTimer: 0,
+    workRequired: 2.0,
+    anchorZ: (bayStartSeg + 3) * SEG_LEN,
+    anchorX: 2.10,
+    startDamage: 0,
+    startTyreWear: 0,
+    startNitro: 1,
+  };
+}
 
 export class AkaRaceSimulator {
   public road: ParsedRoad = buildRoadGeometry(0);
@@ -127,7 +176,7 @@ export class AkaRaceSimulator {
   public nitroOn = false;
   public steer = 0;
   public damage = 0;
-  public tyreWear = 0; // v1.2 tyre degradation repaired in Pit Bay 2 & 3
+  public tyreWear = 0;
   public perf = 1.0;
   public pullDir = 0;
   public sputter = 0;
@@ -142,15 +191,23 @@ export class AkaRaceSimulator {
   public skyOffset = 0;
   public nearOffset = 0;
 
-  // Pit Stop v1.2 state
+  // Pit Stop & 4-Phase Technician Crew state
   public inPitLane = false;
-  public pitLimiterActive = false;
+  public pitLimiterActive = true;
   public activePitBay: ActivePitBay = 'NONE';
   public pitting = false;
   public pitStopTimer = 0;
   public lollipopState: 'HIDDEN' | 'STOP' | 'READY' | 'GO' = 'HIDDEN';
   public lollipopGoTimer = 0;
   public launchBoostTimer = 0;
+  public pitBayCrews: [PitBayCrewState, PitBayCrewState] = [
+    createInitialBayCrew(PIT_BAY_TYRES.start),
+    createInitialBayCrew(PIT_BAY_ENGINE.start),
+  ];
+  public pitCrewProgress: [number, number] = [0, 0];
+  public pitCrewApproaching: [boolean, boolean] = [false, false];
+  public pitServicedCurrentStop = false;
+  private pitServicedBay: ActivePitBay = 'NONE';
   private wrenchSfxTick = 0;
 
   // Banner message
@@ -165,13 +222,8 @@ export class AkaRaceSimulator {
   public multiplayerActive = false;
   public localSlot = CAR_COUNT - 1;
 
-  // Feature toggles: defaults to Unified 3D 2c7 rigid rotation (19 Z-buffered angles, zero 2D fade)
   public features: SimFeaturesConfig = {
-    spriteMode: 'unified_3d',
-    subStageBlend: true,
-    steerVisSmoothRate: 5.4,
-    pitModeV12: false,
-    circuitAnimV12: false,
+    circuitAnimV12: true,
     compactHudL1: false,
   };
 
@@ -236,6 +288,14 @@ export class AkaRaceSimulator {
     this.lollipopState = 'HIDDEN';
     this.lollipopGoTimer = 0;
     this.launchBoostTimer = 0;
+    this.pitBayCrews = [
+      createInitialBayCrew(PIT_BAY_TYRES.start),
+      createInitialBayCrew(PIT_BAY_ENGINE.start),
+    ];
+    this.pitCrewProgress = [0, 0];
+    this.pitCrewApproaching = [false, false];
+    this.pitServicedCurrentStop = false;
+    this.pitServicedBay = 'NONE';
     this.particles = [];
     this.countBeep = 0;
 
@@ -294,21 +354,30 @@ export class AkaRaceSimulator {
     }
   }
 
-  // Instant workbench helpers so Jean-Charles can test pit stops, damage, and tunnels in 1 click!
-  public teleportToPitApproach(presetDamage = 0.58) {
+  // Place player on the pit lane so coasting (or braking) halts cleanly inside Stand 2 / Stand 3
+  public teleportToPitApproach(presetDamage = 0.62) {
     const p = this.player();
     const lapBase = Math.max(0, p.lapsDone) * this.road.length;
-    // Place car 6 segments before start line so pit entry & 3 bays are right ahead!
-    p.dist = lapBase + this.road.length - SEG_LEN * 12;
-    p.x = 0.72;
-    p.speed = MAX_SPEED * 0.42; // ~100 km/h approaching pit entry
+    p.dist = lapBase + SEG_LEN * 16.5; // coasts hands-free to a smooth stop at seg ~21.5 (Stand 2), with Stand 3 just ahead
+    p.x = 2.10; // centered in the pit box (1.72..2.48)
+    p.speed = MAX_SPEED * 0.18; // ~43 km/h
     this.damage = presetDamage;
-    this.tyreWear = 0.48;
-    this.nitro = 0.32;
-    this.pullDir = 1;
+    this.tyreWear = 0.55;
+    this.nitro = 0.35;
+    this.pullDir = 0;
+    this.pitBayCrews = [
+      createInitialBayCrew(PIT_BAY_TYRES.start),
+      createInitialBayCrew(PIT_BAY_ENGINE.start),
+    ];
+    this.pitCrewProgress = [0, 0];
+    this.pitCrewApproaching = [false, false];
+    this.pitServicedCurrentStop = false;
+    this.pitServicedBay = 'NONE';
+    this.pitting = false;
+    this.lollipopState = 'HIDDEN';
     this.screenState = 'RACING';
     this.paused = false;
-    this.showBanner('APPROCHE STANDS DROITE', [255, 215, 90], 2.2);
+    this.showBanner('STANDS : ARRET A 0 KM/H DANS LE BOX JAUNE OU ROUGE', [255, 220, 95], 2.8);
   }
 
   public teleportToTunnelOrHighlight() {
@@ -330,7 +399,7 @@ export class AkaRaceSimulator {
   }
 
   public triggerTestSpinAndDamage() {
-    this.damage = Math.min(0.92, this.damage + 0.32);
+    this.damage = Math.min(0.92, this.damage + 0.34);
     this.tyreWear = Math.min(0.95, this.tyreWear + 0.35);
     this.pullDir = this.pullDir === 0 ? 1 : -this.pullDir;
     this.spinT = 0.65;
@@ -338,7 +407,7 @@ export class AkaRaceSimulator {
     this.shake = 0.55;
     synthAudio.playSfx('crash');
     this.spawnBurst(160, 195, 22, [255, 190, 60]);
-    this.showBanner(this.damage > 0.75 ? 'MOTEUR CRITIQUE ! STAND !' : 'DEGATS MOTEUR + PNEUS', [255, 120, 80], 2.0);
+    this.showBanner(this.damage > 0.75 ? 'MOTEUR CRITIQUE ! STAND A DROITE !' : 'DEGATS MOTEUR + PNEUS', [255, 120, 80], 2.0);
   }
 
   private buildSceneryAndBackdrop() {
@@ -354,17 +423,14 @@ export class AkaRaceSimulator {
 
     const addP = (seg: number, spr: string, offset: number, flip = false, worldW = 900, hitW = 0.45) => {
       if (seg < 0 || seg >= n) return;
-      // Keep right-side pit apron clear between seg 4 and PIT_EXIT_END!
-      if (seg >= 3 && seg <= PIT_EXIT_END + 2 && offset > 0.85 && offset < 2.55) return;
+      // Keep the entire pit complex, outer stand apron, and pit exit sightline free of buildings/props
+      const pi = pitIdxOf(seg, n);
+      if (pi >= PIT_ENTRY - 2 && pi <= PIT_EXIT_END + 10 && offset > 0.88 && offset < 4.0) return;
       this.propsBySeg[seg].push({ seg, spr, offset, flip, worldW, hitW });
     };
 
     // Start gantry
     addP(4, 'GANTRY', 0, false, 4200, 0);
-
-    // Pit lane entry board & garage props
-    addP(PIT_WALL_FIRST - 2, 'PIT_SIGN', 2.25, false, 780, 0.3);
-    addP(PIT_BAY_ENGINE.start + 3, 'PIT_CANOPY', 2.42, false, 1550, 0);
 
     // Curve chevrons
     for (let i = 10; i < n - 5; i += 5) {
@@ -376,22 +442,19 @@ export class AkaRaceSimulator {
 
     const th = this.road.theme;
     for (let i = 16; i < n - 4; i++) {
-      if (this.road.segs[i].flags & 2) continue; // inside tunnel
+      if (this.road.segs[i].flags & 2) continue;
       const side = rnd() < 0.5 ? -1 : 1;
       if (th === 0) {
-        // Sunset Coast
         if (i % 6 === 0) addP(i, 'PALM', -1.42 - rnd() * 0.5, rnd() < 0.5, 1150, 0.25);
         if (i % 6 === 3) addP(i, 'PALM', 1.42 + rnd() * 0.5, rnd() < 0.5, 1150, 0.25);
         if (i % 10 === 0) addP(i, 'BUSH', side * (1.8 + rnd() * 2.0), false, 680, 0.5);
         if (i % 65 === 30) addP(i, 'BOARD', side * 1.65, false, 1100, 0.6);
       } else if (th === 1) {
-        // Alpine Pass
         if (i % 4 === 0) addP(i, 'PINE', -(1.38 + rnd() * 0.9), false, 980, 0.32);
         if (i % 4 === 2) addP(i, 'PINE', 1.38 + rnd() * 0.9, false, 980, 0.32);
         if (i % 15 === 0) addP(i, 'ROCK', side * (1.6 + rnd() * 1.8), false, 850, 0.65);
         if (i % 48 === 20) addP(i, 'CHALET', side * 2.25, false, 1450, 0.75);
       } else if (th === 2) {
-        // Neon City
         if (i % 8 === 0) {
           addP(i, 'LAMP', -1.14, true, 540, 0.2);
           addP(i, 'LAMP', 1.14, false, 540, 0.2);
@@ -400,18 +463,15 @@ export class AkaRaceSimulator {
         if (i % 5 === 2) addP(i, 'BUILDING', 2.05 + rnd() * 0.4, false, 1650, 0.85);
         if (i % 52 === 25) addP(i, 'NEON_BOARD', side * 1.62, false, 1150, 0.6);
       } else if (th === 3) {
-        // Palm Bay
         if (i % 6 === 0) addP(i, 'PALM', -1.4 - rnd() * 0.45, rnd() < 0.5, 1150, 0.25);
         if (i % 6 === 3) addP(i, 'PALM', 1.4 + rnd() * 0.45, rnd() < 0.5, 1150, 0.25);
         if (i % 14 === 4) addP(i, 'PARASOL', side * (1.55 + rnd() * 0.7), rnd() < 0.5, 760, 0.35);
-        if (i === Math.trunc(n * 0.61)) addP(i, 'LIGHTHOUSE', 2.85, false, 1450, 0.7);
+        if (i === Math.trunc(n * 0.61)) addP(i, 'LIGHTHOUSE', 3.35, false, 1450, 0.7);
       } else if (th === 4) {
-        // Glacier Run
         if (i % 5 === 0) addP(i, 'ICE', -(1.42 + rnd() * 1.1), false, 880, 0.55);
         if (i % 5 === 2) addP(i, 'ICE', 1.42 + rnd() * 1.1, false, 880, 0.55);
         if (i % 9 === 4) addP(i, 'PINE_SNOW', side * (1.7 + rnd() * 1.4), false, 960, 0.32);
       } else {
-        // Night Harbor
         if (i % 9 === 0) {
           addP(i, 'LAMP', -1.15, true, 540, 0.2);
           addP(i, 'LAMP', 1.15, false, 540, 0.2);
@@ -419,11 +479,10 @@ export class AkaRaceSimulator {
         if (i % 6 === 0) addP(i, 'CONTAINER', -(1.95 + rnd() * 0.5), false, 1450, 0.85);
         if (i % 6 === 3) addP(i, 'CONTAINER', 1.95 + rnd() * 0.5, false, 1450, 0.85);
         if (i % 28 === 14) addP(i, 'CRANE', side * 2.35, side < 0, 1850, 0.7);
-        if (i === Math.trunc(n * 0.34)) addP(i, 'LIGHTHOUSE', 2.85, false, 1500, 0.7);
+        if (i === Math.trunc(n * 0.34)) addP(i, 'LIGHTHOUSE', 3.35, false, 1500, 0.7);
       }
     }
 
-    // Parallax height maps (1024 columns)
     for (let x = 0; x < 1024; x++) {
       const u = (x / 1024) * Math.PI * 2;
       if (th === 2 || th === 5) {
@@ -474,7 +533,10 @@ export class AkaRaceSimulator {
     if (payload.phase === 'COUNTDOWN' && this.screenState !== 'COUNTDOWN') {
       this.setupRace(payload.trackId, payload.difficulty, payload.laps, true);
       this.stateT = payload.phaseTime;
-    } else if (payload.phase === 'RACING' && (this.screenState === 'COUNTDOWN' || this.screenState === 'RESULTS' || this.screenState === 'TITLE')) {
+    } else if (
+      payload.phase === 'RACING' &&
+      (this.screenState === 'COUNTDOWN' || this.screenState === 'RESULTS' || this.screenState === 'TITLE')
+    ) {
       this.screenState = 'RACING';
       this.raceTime = payload.raceTime;
       this.showBanner('GO!', [140, 255, 160], 1.1);
@@ -494,7 +556,6 @@ export class AkaRaceSimulator {
       localCar.place = sc.place;
 
       if (sc.slot !== mySlot) {
-        // Smoothly blend remote / server-AI position
         const delta = sc.dist - localCar.dist;
         localCar.dist = Math.abs(delta) > SEG_LEN * 10 ? sc.dist : localCar.dist + delta * 0.45;
         localCar.x += (sc.x - localCar.x) * 0.45;
@@ -559,11 +620,10 @@ export class AkaRaceSimulator {
     if (this.bannerTimer > 0) this.bannerTimer -= clampedDt;
     if (this.crashCooldown > 0) this.crashCooldown -= clampedDt;
 
-    // L1 button: toggle Pit Speed Limiter (when near pit) or Compact HUD on Gamebuino AKA!
     if (input.l1 && !this.prevL1) {
       if (this.inPitLane) {
         this.pitLimiterActive = !this.pitLimiterActive;
-        this.showBanner(this.pitLimiterActive ? 'LIMITEUR STAND 80 KM/H' : 'LIMITEUR OFF', [130, 230, 255], 1.1);
+        this.showBanner(this.pitLimiterActive ? 'LIMITEUR STAND 85 KM/H' : 'LIMITEUR OFF', [130, 230, 255], 1.1);
       } else {
         this.features.compactHudL1 = !this.features.compactHudL1;
         this.showBanner(this.features.compactHudL1 ? 'HUD COMPACT AKA (L1)' : 'HUD COMPLET (L1)', [200, 225, 255], 1.0);
@@ -609,7 +669,6 @@ export class AkaRaceSimulator {
       return;
     }
 
-    // Active RACING / FINISHED simulation
     this.raceTime += clampedDt;
     if (this.shake > 0) this.shake = Math.max(0, this.shake - clampedDt);
     if (this.spinT > 0) this.spinT = Math.max(0, this.spinT - clampedDt);
@@ -629,6 +688,7 @@ export class AkaRaceSimulator {
 
     this.handleCollisions(clampedDt);
     this.updatePitStops(clampedDt, input);
+    this.updatePitCrewAnimations(clampedDt);
 
     if (!this.multiplayerActive) {
       for (const c of this.cars) this.updateLaps(c);
@@ -637,14 +697,12 @@ export class AkaRaceSimulator {
       this.updateLaps(p);
     }
 
-    // Parallax scrolling driven by curvature
     const segIdx = Math.trunc(this.carZ(p) / SEG_LEN) % this.road.segs.length;
     const seg = this.road.segs[segIdx];
     const segsMoved = (p.dist - oldDist) / SEG_LEN;
     this.skyOffset = (((this.skyOffset + seg.curve * segsMoved * 0.8) % 1024) + 1024) % 1024;
     this.nearOffset = (((this.nearOffset + seg.curve * segsMoved * 1.7) % 1024) + 1024) % 1024;
 
-    // Gearbox & RPM
     const gearTop = [0, 0.16, 0.31, 0.47, 0.63, 0.8, 1.4];
     const pct = p.speed / MAX_SPEED;
     let g = 1;
@@ -674,8 +732,10 @@ export class AkaRaceSimulator {
   private updatePlayerCar(p: SimCar, dt: number, input: InputState) {
     const n = this.road.segs.length;
     const segIdx = Math.trunc(this.carZ(p) / SEG_LEN) % n;
+    const pitIdx = pitIdxOf(segIdx, n);
     const seg = this.road.segs[segIdx];
     const pct = p.speed / MAX_SPEED;
+    const oldX = p.x;
 
     let gas = input.a;
     const brake = input.b || input.down;
@@ -686,13 +746,10 @@ export class AkaRaceSimulator {
     else if (input.right) targetSteer = 1;
     else if (Math.abs(input.joyX) > 0.05) targetSteer = input.joyX;
 
-    // Keep physics steering snappy (dt * 9.5), while smoothing visual yaw (p.steerVis) so 3/4 views roll progressively!
     this.steer += (targetSteer - this.steer) * Math.min(1, dt * 9.5);
-    const visRate = this.features.steerVisSmoothRate;
-    p.steerVis += (this.steer - p.steerVis) * Math.min(1, dt * visRate);
+    p.steerVis += (this.steer - p.steerVis) * Math.min(1, dt * 5.8);
     p.braking = brake;
 
-    // Nitro logic
     const wasNitro = this.nitroOn;
     this.nitroOn = nitroBtn && this.nitro > 0.02 && gas && !this.inPitLane && !p.retired;
     p.nitroOn = this.nitroOn;
@@ -703,13 +760,11 @@ export class AkaRaceSimulator {
       this.nitro = Math.min(1, this.nitro + dt / 28.0);
     }
 
-    // Tyre grip & damage effects
     const gripFactor = 1.0 - this.tyreWear * 0.28;
     const dx = dt * 2.05 * Math.max(0.15, pct) * gripFactor;
     p.x += dx * this.steer;
     p.x -= dx * pct * seg.curve * (0.3 / gripFactor);
 
-    // Subtle steering pull when damaged > 45%
     if (this.damage > 0.45 && this.pullDir !== 0) {
       p.x += this.pullDir * (this.damage - 0.45) * 0.38 * pct * dt;
     }
@@ -743,14 +798,35 @@ export class AkaRaceSimulator {
       p.speed = Math.max(0, p.speed - (MAX_SPEED / 5.2) * dt);
     }
 
-    // Check if inside separated right-side pit apron (x in 1.06 .. 2.02 around start)
-    const inApronSegs = this.features.pitModeV12 && segIdx >= 3 && segIdx <= PIT_EXIT_END;
-    const onPitTarmac = inApronSegs && p.x >= PIT_WALL_X && p.x <= PIT_LANE_X1 + 0.12;
-    this.inPitLane = onPitTarmac;
+    // Pit wall separation between road and pit complex (segments PIT_WALL_START_REPO .. PIT_WALL_END)
+    if (segIdx >= PIT_WALL_START_REPO && segIdx <= PIT_WALL_END) {
+      if (oldX < PIT_WALL_X && p.x > PIT_WALL_X - 0.045) {
+        p.x = PIT_WALL_X - 0.045;
+        if (p.speed > MAX_SPEED * 0.1) {
+          p.speed -= MAX_SPEED * 0.5 * dt;
+          this.shake = Math.max(this.shake, 0.15);
+        }
+      } else if (oldX >= PIT_WALL_X && p.x < PIT_WALL_X + 0.045) {
+        p.x = PIT_WALL_X + 0.045;
+        if (p.speed > MAX_SPEED * 0.1) {
+          p.speed -= MAX_SPEED * 0.5 * dt;
+          this.shake = Math.max(this.shake, 0.15);
+        }
+      }
+    }
 
-    if (onPitTarmac) {
+    const taper = pitTaperAt(pitIdx);
+    const outer = pitOuterAt(taper);
+    const inPitComplex = pitIdx >= PIT_ENTRY && pitIdx <= PIT_EXIT_END && p.x >= 1.04 && p.x <= outer + 0.45;
+    const inServiceLane =
+      pitIdx >= PIT_ENTRY &&
+      pitIdx <= PIT_EXIT_END &&
+      p.x >= pitInnerAt(pitIdx) - 0.12 &&
+      p.x <= outer + 0.10;
+    this.inPitLane = inServiceLane;
+
+    if (inPitComplex) {
       this.offroad = 0;
-      // Pit lane speed limiter (85 km/h automatic assist unless holding nitro, so stopping in a bay is joyful!)
       if (this.pitLimiterActive && p.speed > (85 / 240) * MAX_SPEED) {
         p.speed = Math.max((85 / 240) * MAX_SPEED, p.speed - MAX_SPEED * 0.9 * dt);
       }
@@ -769,7 +845,7 @@ export class AkaRaceSimulator {
       this.tyreWear = Math.min(1, this.tyreWear + dt * 0.018 * this.skid);
     }
 
-    p.x = Math.max(-2.8, Math.min(2.8, p.x));
+    p.x = Math.max(-2.8, Math.min(2.9, p.x));
     p.dist += p.speed * dt;
   }
 
@@ -777,27 +853,10 @@ export class AkaRaceSimulator {
     const p = this.player();
     const n = this.road.segs.length;
     const segIdx = Math.trunc(this.carZ(p) / SEG_LEN) % n;
+    const pitIdx = pitIdxOf(segIdx, n);
     const kmh = this.speedKmh();
     const segFlags = this.road.segs[segIdx].flags;
 
-    if (!this.features.pitModeV12) {
-      // Legacy v1.1 single yellow box on road
-      const inBox = segIdx >= PIT_V11.box0 && segIdx < PIT_V11.box1 && p.x > PIT_V11.x0 && p.x < PIT_V11.x1;
-      if (inBox && kmh < 30 && (this.damage > 0 || this.nitro < 1)) {
-        this.pitting = true;
-        this.activePitBay = 'ENGINE';
-        this.pitStopTimer += dt;
-        this.nitro = Math.min(1, this.nitro + dt * 0.5);
-        this.damage = Math.max(0, this.damage - dt * 0.26);
-      } else {
-        this.pitting = false;
-        this.activePitBay = 'NONE';
-      }
-      p.pitting = this.pitting;
-      return;
-    }
-
-    // Mid-circuit express N2O recharge pad (right shoulder at 50% lap)
     if ((segFlags & SEGF_MID_PIT) && p.x > 0.75 && p.x < 1.35 && this.nitro < 1.0) {
       this.activePitBay = 'MID_NITRO';
       this.nitro = Math.min(1, this.nitro + dt * 0.85);
@@ -807,25 +866,40 @@ export class AkaRaceSimulator {
       return;
     }
 
-    const inApronX = p.x >= PIT_WALL_X + 0.02 && p.x <= PIT_LANE_X1 + 0.08;
-    if (!inApronX || segIdx < PIT_WALL_FIRST || segIdx > PIT_WALL_END) {
-      if (this.lollipopState === 'GO' && input.a && this.lollipopGoTimer > 0) {
-        this.launchBoostTimer = 1.4;
-        this.lollipopGoTimer = 0;
-        synthAudio.playSfx('nitro');
-        this.showBanner('DEPART STAND PARFAIT !', [120, 255, 190], 1.5);
-      }
+    // Launch boost when pressing gas right after Lollipop GO
+    if (this.lollipopState === 'GO' && input.a && this.lollipopGoTimer > 0 && kmh > 3.0) {
+      this.launchBoostTimer = 1.4;
+      this.lollipopGoTimer = 0;
+      this.lollipopState = 'HIDDEN';
+      synthAudio.playSfx('nitro');
+      this.showBanner('DEPART STAND PARFAIT !', [120, 255, 190], 1.5);
+    }
+
+    if (kmh > 10.0) {
+      this.pitServicedCurrentStop = false;
+      this.pitServicedBay = 'NONE';
+    }
+
+    if (!this.inPitLane || pitIdx < PIT_WALL_FIRST || pitIdx > PIT_WALL_END) {
       this.pitting = false;
       p.pitting = false;
       this.activePitBay = 'NONE';
-      if (segIdx > PIT_EXIT_END || !inApronX) this.lollipopState = 'HIDDEN';
+      this.pitServicedCurrentStop = false;
+      this.pitServicedBay = 'NONE';
+      if (pitIdx > PIT_EXIT_END || !this.inPitLane) this.lollipopState = 'HIDDEN';
+      for (let b = 0; b < 2; b++) {
+        if (this.pitBayCrews[b].phase === 'WALKING_IN' || this.pitBayCrews[b].phase === 'WORKING') {
+          this.pitBayCrews[b].phase = 'WALKING_OUT';
+        }
+      }
       return;
     }
 
-    // Determine which of the 3 specialized Pit Bays the car is in!
     if (segIdx >= PIT_BAY_NITRO.start && segIdx <= PIT_BAY_NITRO.end) {
       this.activePitBay = 'NITRO';
-      // Drive-through cryo N2O recharge (< 95 km/h)
+      if (this.pitServicedBay !== 'NITRO') {
+        this.pitServicedCurrentStop = false;
+      }
       if (kmh <= PIT_BAY_NITRO.maxSpeedKmh && this.nitro < 1.0) {
         this.pitting = true;
         this.nitro = Math.min(1, this.nitro + dt * 1.35);
@@ -839,69 +913,16 @@ export class AkaRaceSimulator {
       }
     } else if (segIdx >= PIT_BAY_TYRES.start && segIdx <= PIT_BAY_TYRES.end) {
       this.activePitBay = 'TYRES';
-      if (kmh <= PIT_BAY_TYRES.maxSpeedKmh && (this.tyreWear > 0.01 || this.pullDir !== 0)) {
-        this.pitting = true;
-        this.pitStopTimer += dt;
-        this.lollipopState = 'STOP';
-        this.tyreWear = Math.max(0, this.tyreWear - dt * 0.75);
-        this.wrenchSfxTick += dt;
-        if (this.wrenchSfxTick > 0.28) {
-          this.wrenchSfxTick = 0;
-          synthAudio.playSfx('pit_wrench');
-          this.spawnBurst(118, 208, 4, [255, 220, 90], 'spark');
-          this.spawnBurst(202, 208, 4, [255, 220, 90], 'spark');
-        }
-        if (this.tyreWear <= 0) {
-          this.pullDir = 0;
-          this.lollipopState = 'GO';
-          this.lollipopGoTimer = 1.8;
-          synthAudio.playSfx('pit_done');
-          this.showBanner('PNEUS NEUFS ! GO !', [255, 235, 90], 1.5);
-        }
-      } else {
-        this.pitting = false;
+      if (this.pitServicedBay !== 'TYRES') {
+        this.pitServicedCurrentStop = false;
       }
+      this.handleCrewedBay(0, 'TYRES', dt, kmh);
     } else if (segIdx >= PIT_BAY_ENGINE.start && segIdx <= PIT_BAY_ENGINE.end) {
       this.activePitBay = 'ENGINE';
-      const needsService = this.damage > 0.005 || this.tyreWear > 0.02 || this.nitro < 0.99;
-      if (kmh <= PIT_BAY_ENGINE.maxSpeedKmh && needsService) {
-        if (!this.pitting) {
-          this.pitStopTimer = 0;
-          this.showBanner('REVISION MOTEUR EN COURS', [255, 215, 100], 1.4);
-        }
-        this.pitting = true;
-        this.pitStopTimer += dt;
-        const repairRate = [0.42, 0.32, 0.25, 0.20][this.difficulty] ?? 0.32;
-        this.damage = Math.max(0, this.damage - repairRate * dt);
-        this.tyreWear = Math.max(0, this.tyreWear - 0.55 * dt);
-        this.nitro = Math.min(1, this.nitro + 0.7 * dt);
-        this.lollipopState = this.damage < 0.08 ? 'READY' : 'STOP';
-
-        this.wrenchSfxTick += dt;
-        if (this.wrenchSfxTick > 0.3) {
-          this.wrenchSfxTick = 0;
-          synthAudio.playSfx('pit_wrench');
-          this.spawnBurst(160 + (this.rand() - 0.5) * 55, 194, 5, [255, 200, 80], 'spark');
-          this.spawnBurst(160, 182, 2, [220, 230, 240], 'puff');
-        }
-
-        if (this.damage <= 0 && this.tyreWear <= 0 && this.nitro >= 0.99) {
-          this.pullDir = 0;
-          this.pitting = false;
-          this.lollipopState = 'GO';
-          this.lollipopGoTimer = 2.0;
-          synthAudio.playSfx('pit_done');
-          this.showBanner('MOTEUR 100% — GO! (GAZ = BOOST)', [130, 255, 175], 2.0);
-        }
-      } else {
-        if (this.lollipopState === 'GO' && input.a && this.lollipopGoTimer > 0) {
-          this.launchBoostTimer = 1.4;
-          this.lollipopGoTimer = 0;
-          synthAudio.playSfx('nitro');
-          this.showBanner('BOOST SORTIE DE STAND !', [120, 255, 190], 1.6);
-        }
-        this.pitting = false;
+      if (this.pitServicedBay !== 'ENGINE') {
+        this.pitServicedCurrentStop = false;
       }
+      this.handleCrewedBay(1, 'ENGINE', dt, kmh);
     } else {
       this.activePitBay = 'NONE';
       this.pitting = false;
@@ -910,30 +931,145 @@ export class AkaRaceSimulator {
     p.pitting = this.pitting;
   }
 
+  private handleCrewedBay(bayIdx: 0 | 1, bayType: 'TYRES' | 'ENGINE', dt: number, kmh: number) {
+    const crew = this.pitBayCrews[bayIdx];
+    const otherCrew = this.pitBayCrews[bayIdx === 0 ? 1 : 0];
+    if (otherCrew.phase === 'WALKING_IN' || otherCrew.phase === 'WORKING') {
+      otherCrew.phase = 'WALKING_OUT';
+    }
+
+    // If the car starts moving away while technicians are approaching or working, abort immediately
+    if (kmh > 7.0) {
+      if (crew.phase === 'WALKING_IN' || crew.phase === 'WORKING') {
+        crew.phase = 'WALKING_OUT';
+      }
+      this.pitting = false;
+      if (this.lollipopState === 'STOP' || this.lollipopState === 'READY') {
+        this.lollipopState = 'HIDDEN';
+      }
+      return;
+    }
+
+    // Car has come to a stop (< 4 km/h) inside the pit box: dispatch technicians from outside!
+    if (kmh < 4.0 && !this.pitServicedCurrentStop) {
+      if (crew.phase === 'IDLE_OUTSIDE' || crew.phase === 'WALKING_OUT') {
+        const p = this.player();
+        crew.anchorZ = this.carZ(p);
+        crew.anchorX = Math.max(1.80, Math.min(2.36, p.x));
+        crew.workTimer = 0;
+        crew.startDamage = this.damage;
+        crew.startTyreWear = this.tyreWear;
+        crew.startNitro = this.nitro;
+        crew.workRequired =
+          bayIdx === 0
+            ? Math.max(1.85, 1.35 + this.tyreWear * 1.5 + Math.max(0, this.damage - 0.25) * 0.9)
+            : Math.max(2.15, 1.55 + this.damage * 1.8 + this.tyreWear * 0.9 + (1 - this.nitro) * 0.5);
+        crew.phase = 'WALKING_IN';
+        this.pitStopTimer = 0;
+        this.wrenchSfxTick = 0.2;
+        this.showBanner(
+          bayIdx === 0 ? 'STAND PNEUS : INTERVENTION EN COURS' : 'STAND MOTEUR : INTERVENTION EN COURS',
+          [255, 220, 95],
+          1.5
+        );
+      }
+
+      this.pitting = true;
+      this.pitStopTimer += dt;
+
+      if (crew.phase === 'WALKING_IN') {
+        this.lollipopState = 'STOP';
+      } else if (crew.phase === 'WORKING') {
+        // Technicians are now right beside the car — perform active work on the car!
+        crew.workTimer += dt;
+        const frac = Math.min(1, crew.workTimer / Math.max(0.1, crew.workRequired));
+        this.lollipopState = crew.workRequired - crew.workTimer < 0.38 ? 'READY' : 'STOP';
+
+        if (bayIdx === 0) {
+          this.tyreWear = Math.max(0, crew.startTyreWear * (1 - frac));
+          const targetDmg = Math.min(crew.startDamage, 0.22);
+          this.damage = crew.startDamage + (targetDmg - crew.startDamage) * frac;
+        } else {
+          this.damage = Math.max(0, crew.startDamage * (1 - frac));
+          this.tyreWear = Math.max(0, crew.startTyreWear * (1 - frac));
+          this.nitro = Math.min(1, crew.startNitro + (1 - crew.startNitro) * frac);
+        }
+
+        this.wrenchSfxTick += dt;
+        if (this.wrenchSfxTick >= 0.28) {
+          this.wrenchSfxTick = 0;
+          synthAudio.playSfx('pit_wrench');
+          if (bayIdx === 1) {
+            this.spawnBurst(160, 190, 2, [220, 230, 240], 'puff');
+          }
+        }
+
+        // As soon as work is finished, technicians immediately step back and walk outside!
+        if (crew.workTimer >= crew.workRequired) {
+          if (bayIdx === 0) {
+            this.tyreWear = 0;
+            this.pullDir = 0;
+          } else {
+            this.damage = 0;
+            this.tyreWear = 0;
+            this.nitro = 1;
+            this.pullDir = 0;
+          }
+          this.pitServicedCurrentStop = true;
+          this.pitServicedBay = bayType;
+          this.pitting = false;
+          crew.phase = 'WALKING_OUT';
+          this.lollipopState = 'GO';
+          this.lollipopGoTimer = 3.2;
+          synthAudio.playSfx('pit_done');
+          this.showBanner(
+            bayIdx === 0 ? 'PNEUS OK — EQUIPE DEGAGEE, GO!' : 'REVISION 100% — VOIE LIBRE, GO!',
+            [130, 255, 175],
+            2.1
+          );
+        }
+      }
+    } else {
+      this.pitting = false;
+      if (this.lollipopGoTimer <= 0 && this.lollipopState === 'GO') {
+        this.lollipopState = 'HIDDEN';
+      }
+    }
+  }
+
+  private updatePitCrewAnimations(dt: number) {
+    for (let b = 0; b < 2; b++) {
+      const crew = this.pitBayCrews[b];
+      if (crew.phase === 'WALKING_IN') {
+        crew.progress = Math.min(1, crew.progress + dt * 1.18);
+        this.pitCrewApproaching[b] = true;
+        if (crew.progress >= 1) {
+          crew.progress = 1;
+          crew.phase = 'WORKING';
+        }
+      } else if (crew.phase === 'WORKING') {
+        crew.progress = 1;
+        this.pitCrewApproaching[b] = false;
+      } else if (crew.phase === 'WALKING_OUT') {
+        crew.progress = Math.max(0, crew.progress - dt * 1.32);
+        this.pitCrewApproaching[b] = false;
+        if (crew.progress <= 0) {
+          crew.progress = 0;
+          crew.phase = 'IDLE_OUTSIDE';
+        }
+      } else {
+        crew.progress = 0;
+        this.pitCrewApproaching[b] = false;
+      }
+      this.pitCrewProgress[b] = crew.progress;
+    }
+  }
+
   private handleCollisions(dt: number) {
     const p = this.player();
     const n = this.road.segs.length;
     const segIdx = Math.trunc(this.carZ(p) / SEG_LEN) % n;
 
-    // Concrete Pit Wall separation check (x ≈ PIT_WALL_X on segs PIT_WALL_FIRST .. PIT_WALL_END)
-    if (
-      this.features.pitModeV12 &&
-      segIdx >= PIT_WALL_FIRST &&
-      segIdx <= PIT_WALL_END &&
-      Math.abs(p.x - PIT_WALL_X) < 0.14 &&
-      this.crashCooldown <= 0 &&
-      p.speed > MAX_SPEED * 0.15
-    ) {
-      this.crashCooldown = 0.45;
-      p.x = p.x < PIT_WALL_X ? PIT_WALL_X - 0.18 : PIT_WALL_X + 0.18;
-      p.speed *= 0.65;
-      this.shake = 0.4;
-      this.damage = Math.min(1, this.damage + 0.06);
-      synthAudio.playSfx('crash');
-      this.spawnBurst(190, 200, 14, [255, 200, 90], 'spark');
-    }
-
-    // Scenery collisions
     if (Math.abs(p.x) > 1.05 && !this.inPitLane && this.crashCooldown <= 0 && p.speed > MAX_SPEED * 0.15) {
       const props = this.propsBySeg[segIdx];
       for (const pr of props) {
@@ -962,13 +1098,17 @@ export class AkaRaceSimulator {
             }
           }
           synthAudio.playSfx(soft ? 'bump' : 'crash');
-          this.spawnBurst(160 + (pr.offset > 0 ? 42 : -42), 192, soft ? 10 : 20, soft ? [120, 210, 90] : [255, 195, 70]);
+          this.spawnBurst(
+            160 + (pr.offset > 0 ? 42 : -42),
+            192,
+            soft ? 10 : 20,
+            soft ? [120, 210, 90] : [255, 195, 70]
+          );
           break;
         }
       }
     }
 
-    // Car-to-car collisions
     for (const other of this.cars) {
       if (other.slot === p.slot || other.retired) continue;
       let dz = this.carZ(other) - this.carZ(p);
@@ -1061,7 +1201,6 @@ export class AkaRaceSimulator {
   }
 
   private updateParticles(dt: number) {
-    // Emit damage smoke if player engine damaged > 45%
     if (this.damage > 0.45 && Math.trunc(this.globalTime * 24) % 2 === 0 && this.particles.length < 200) {
       const dark = this.damage > 0.75 ? 45 : 130;
       this.particles.push({

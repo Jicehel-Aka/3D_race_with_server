@@ -8,11 +8,8 @@ import {
   PIT_BAY_ENGINE,
   PIT_BAY_NITRO,
   PIT_BAY_TYRES,
-  PIT_LANE_X0,
-  PIT_LANE_X1,
-  PIT_V11,
+  PIT_EXIT_END,
   PIT_WALL_END,
-  PIT_WALL_FIRST,
   PIT_WALL_X,
   ROAD_W,
   SCREEN_H,
@@ -32,14 +29,22 @@ import {
 import {
   CAR_ART3Q_W,
   CAR_ART_H,
-  CAR_ART_MID,
   CAR_ART_W,
-  blendContinuousStage,
   getCarArtAtlasSync,
   getUnifiedRigidFrame,
-  type CarSpriteFrame,
 } from './carArt3D';
-import type { AkaRaceSimulator, SimCar, SimProp } from './raceSim';
+import {
+  PIT_ENTRY,
+  PIT_STRIP_W,
+  PIT_WALL_START_REPO,
+  pitIdxOf,
+  pitOuterAt,
+  pitTaperAt,
+  type AkaRaceSimulator,
+  type SimCar,
+  type SimProp,
+} from './raceSim';
+import { TECH_H, TECH_PAL_RGB, TECH_PX, TECH_W, TechFrame } from './techArt';
 
 interface ThemeColors {
   skyTop: [number, number, number];
@@ -133,6 +138,7 @@ const THEMES: ThemeColors[] = [
 
 interface ProjSeg {
   idx: number;
+  pit: number;
   valid: boolean;
   clip: number;
   fog: number;
@@ -146,13 +152,26 @@ interface ProjSeg {
   w2: number;
 }
 
+interface PitCrewRenderItem {
+  segIdx: number;
+  pctInSeg: number;
+  dzFromPlayer: number;
+  worldX: number;
+  dir: 1 | -1;
+  frame: TechFrame;
+  yOffset: number;
+  isWorking: boolean;
+  isLollipop: boolean;
+  showGoSign: boolean;
+}
+
 const DRAW_DIST = 115;
 
 export class Renderer320x240 {
   private imgData: ImageData | null = null;
   private buf32: Uint32Array = new Uint32Array(SCREEN_W * SCREEN_H);
   private pSegs: ProjSeg[] = Array.from({ length: DRAW_DIST }, () => ({
-    idx: 0, valid: false, clip: SCREEN_H, fog: 0,
+    idx: 0, pit: 0, valid: false, clip: SCREEN_H, fog: 0,
     s1: 0, s2: 0, x1: 0, y1: 0, w1: 0, x2: 0, y2: 0, w2: 0,
   }));
 
@@ -175,6 +194,11 @@ export class Renderer320x240 {
 
   private pset(x: number, y: number, r: number, g: number, b: number) {
     if (x < 0 || x >= SCREEN_W || y < 0 || y >= SCREEN_H) return;
+    this.buf32[y * SCREEN_W + x] = (255 << 24) | ((b & 255) << 16) | ((g & 255) << 8) | (r & 255);
+  }
+
+  private psetClip(x: number, y: number, clipY: number, r: number, g: number, b: number) {
+    if (x < 0 || x >= SCREEN_W || y < 0 || y >= clipY || y >= SCREEN_H) return;
     this.buf32[y * SCREEN_W + x] = (255 << 24) | ((b & 255) << 16) | ((g & 255) << 8) | (r & 255);
   }
 
@@ -210,19 +234,11 @@ export class Renderer320x240 {
     const t = sim.globalTime;
     const animOn = sim.features.circuitAnimV12;
 
-    // 1. Sky + Real-Time Circuit Sky Animations
     this.drawSkyAndBackdrops(sim, th, animOn ? t : 0, animOn);
-
-    // 2. Road projection + Separated 3-Bay Pit Lane + Tunnel Arches
-    this.drawRoadAndSprites(sim, th, animOn ? t : 0, animOn);
-
-    // 3. Particles + Weather Overlays (Alpine snow / Glacier ice crystals)
+    this.drawRoadAndSprites(sim, th, t, animOn);
     this.drawParticlesAndWeather(sim, animOn);
 
-    // Commit 320x240 pixel buffer to Canvas
     ctx.putImageData(this.imgData, 0, 0);
-
-    // 4. Crisp Arcade HUD, Pit Crew Telemetry Board, Countdown Lights & Multiplayer Tags
     this.drawHudAndOverlays(ctx, sim);
   }
 
@@ -232,7 +248,6 @@ export class Renderer320x240 {
     const farOff = Math.trunc(sim.skyOffset) & 1023;
     const nearOff = Math.trunc(sim.nearOffset) & 1023;
 
-    // Base Sky Gradient
     for (let y = 0; y < HORIZON_Y + 6; y++) {
       const f = y / (HORIZON_Y + 6);
       const col = f < 0.55
@@ -241,9 +256,7 @@ export class Renderer320x240 {
       this.fillSpan(y, 0, SCREEN_W, this.pack(col[0], col[1], col[2]));
     }
 
-    // Theme-specific Sky & Horizon Animations
     if (themeId === THEME_COAST) {
-      // Retro Synthwave Sun with animated slice shimmer!
       const sunX = ((600 - skyOff) % 1024 + 1024) % 1024;
       const sx = sunX > 512 ? sunX - 1024 : sunX;
       if (sx > -50 && sx < SCREEN_W + 50) {
@@ -262,7 +275,6 @@ export class Renderer320x240 {
           this.fillSpan(cy + dy, sx - dx, sx + dx + 1, this.pack(sc[0], sc[1], sc[2]));
         }
       }
-      // Drifting evening clouds + flapping seabirds!
       const cloudDrift = animOn ? Math.trunc(t * 9) : 0;
       for (let k = 0; k < 8; k++) {
         const cx = (((k * 137 + 40 + cloudDrift) - skyOff) % 1024 + 1024) % 1024;
@@ -283,7 +295,6 @@ export class Renderer320x240 {
         }
       }
     } else if (themeId === THEME_GLACIER) {
-      // Stars + LIVE UNDULATING AURORA BOREALIS CURTAINS!
       for (let k = 0; k < 55; k++) {
         const sx = (((k * 193 + 11) - skyOff) % 1024 + 1024) % 1024;
         if (sx < SCREEN_W) {
@@ -305,7 +316,6 @@ export class Renderer320x240 {
         }
       }
     } else if (themeId === THEME_CITY || themeId === THEME_HARBOR) {
-      // Twinkling night stars + sweeping club / port searchlights!
       for (let k = 0; k < 50; k++) {
         const sx = (((k * 211 + 7) - skyOff) % 1024 + 1024) % 1024;
         if (sx < SCREEN_W) {
@@ -314,7 +324,6 @@ export class Renderer320x240 {
           this.blendPixel(sx, sy, 245, 245, 255, tw);
         }
       }
-      // Sweeping searchlights!
       for (let b = 0; b < 2; b++) {
         const basePx = b === 0 ? 190 : 720;
         const bx = (((basePx - skyOff) % 1024) + 1024) % 1024;
@@ -332,7 +341,6 @@ export class Renderer320x240 {
       }
     }
 
-    // Far Mountain / City Skyline Silhouette
     const baseY = HORIZON_Y + 4;
     for (let x = 0; x < SCREEN_W; x++) {
       const col = (x + farOff) & 1023;
@@ -344,7 +352,6 @@ export class Renderer320x240 {
         if ((themeId === THEME_ALPINE || themeId === THEME_GLACIER) && alt > h * 0.58) {
           c = th.farHi;
         } else if (themeId === THEME_CITY || themeId === THEME_HARBOR) {
-          // Animated blinking skyline windows!
           if (alt > 4 && alt < h - 3 && (col & 3) === 0 && (y & 3) === 0) {
             const winHash = (col * 131 + y * 17) & 15;
             const blinkSlot = animOn ? Math.trunc(t * 1.8 + winHash) % 9 : 1;
@@ -357,7 +364,6 @@ export class Renderer320x240 {
       }
     }
 
-    // Alpine Pass Cable Car (Télécabine) gliding between mountain peaks!
     if (themeId === THEME_ALPINE && animOn) {
       const wireX0 = (((240 - farOff) % 1024) + 1024) % 1024;
       if (wireX0 < SCREEN_W + 80) {
@@ -380,7 +386,6 @@ export class Renderer320x240 {
       }
     }
 
-    // Neon City Express Cyber-Monorail streaking across skyline!
     if (themeId === THEME_CITY && animOn) {
       const railY = baseY - 12;
       this.fillSpan(railY + 2, 0, SCREEN_W, this.pack(34, 28, 66));
@@ -395,7 +400,6 @@ export class Renderer320x240 {
       }
     }
 
-    // Animated Sea Band for Palm Bay & Night Harbor (rolling waves + bobbing sailboats / blinking ships!)
     if (themeId === THEME_TROPIC || themeId === THEME_HARBOR) {
       const seaH = 12;
       const harbor = themeId === THEME_HARBOR;
@@ -415,7 +419,6 @@ export class Renderer320x240 {
       }
 
       if (!harbor) {
-        // Bobbing & sailing catamarans on Palm Bay!
         for (const baseBoat of [160, 520, 860]) {
           const drift = animOn ? Math.trunc(t * 6) : 0;
           const sx = (((baseBoat + drift - farOff) % 1024) + 1024) % 1024;
@@ -430,7 +433,6 @@ export class Renderer320x240 {
           }
         }
       } else {
-        // Cargo ship with blinking red mast warning beacon in Night Harbor!
         for (const shipCol of [310, 760]) {
           const sx = (((shipCol - farOff) % 1024) + 1024) % 1024;
           if (sx < SCREEN_W + 40) {
@@ -449,7 +451,6 @@ export class Renderer320x240 {
       }
     }
 
-    // Near Layer Silhouette
     for (let x = 0; x < SCREEN_W; x++) {
       const col = (x + nearOff) & 1023;
       const h = sim.nearH[col];
@@ -489,6 +490,7 @@ export class Renderer320x240 {
       const sg = sim.road.segs[i];
       const ps = this.pSegs[n];
       ps.idx = i;
+      ps.pit = pitIdxOf(i, N);
       ps.clip = maxy;
       const d = n / DRAW_DIST;
       ps.fog = Math.min(250, Math.trunc((1 - 1 / Math.exp(d * d * th.fogDensity)) * 256));
@@ -518,11 +520,10 @@ export class Renderer320x240 {
       dx += sg.curve;
 
       if (z1 <= CAM_DEPTH || ps.y2 >= ps.y1 || ps.y2 >= maxy) continue;
-      this.drawSegmentRows(sim, ps, maxy, th, sg.flags, t, animOn);
+      this.drawSegmentRows(ps, maxy, th, sg.flags, t, animOn);
       maxy = Math.max(0, Math.ceil(ps.y2));
     }
 
-    // Back-to-front Scenery, Tunnel Arches, Remote/AI Cars, Pit Crew, and Player Car!
     let plN = -1;
     for (let n = 0; n < DRAW_DIST; n++) {
       if (this.pSegs[n].idx === plIdx) {
@@ -532,18 +533,17 @@ export class Renderer320x240 {
     }
 
     const inTunnelPlayer = Boolean(plSeg.flags & SEGF_TUNNEL) && animOn;
+    const crewItems = this.buildPitCrewRenderItems(sim, N, plZ, t);
 
     for (let n = DRAW_DIST - 1; n > 0; n--) {
       const ps = this.pSegs[n];
       if (!ps.valid) continue;
       const sg = sim.road.segs[ps.idx];
 
-      // v1.2 Tunnel Overhead Ribs & Sodium Ceiling Lamps (completes track.h SEGF_TUNNEL!)
       if (animOn && (sg.flags & SEGF_TUNNEL) && ps.w1 > 4) {
         this.drawTunnelPortal(ps, th, sim.road.theme);
       }
 
-      // Roadside Scenery Props
       const props = sim.propsBySeg[ps.idx];
       if (props) {
         for (const pr of props) {
@@ -551,12 +551,19 @@ export class Renderer320x240 {
         }
       }
 
-      // v1.2 Pit Crew Mechanics & Lollipop Man standing at Bay 3!
-      if (sim.features.pitModeV12 && ps.idx === PIT_BAY_ENGINE.start + 2 && ps.w1 > 8) {
-        this.drawPitCrewAtBay(sim, ps, t);
+      // Pit lane static architecture (awnings, cones, tyre stacks on outer apron)
+      if (ps.pit >= PIT_ENTRY && ps.pit <= PIT_EXIT_END) {
+        this.drawPitStaticScenery(ps, th, t);
       }
 
-      // Other Cars in segment
+      // Crew members on this segment that are ahead of the player car's rear axle (drawn before player car)
+      for (let m = 0; m < crewItems.length; m++) {
+        const item = crewItems[m];
+        if (item.segIdx === ps.idx && item.dzFromPlayer >= 210) {
+          this.drawPitCrewItem(sim, ps, item, th);
+        }
+      }
+
       for (let k = 0; k < CAR_COUNT; k++) {
         const c = sim.cars[k];
         if (c.slot === sim.playerIdx) continue;
@@ -573,16 +580,14 @@ export class Renderer320x240 {
         this.drawCarSprite(sim, c, Math.round(sx - dw / 2), Math.round(sy - dh), Math.round(dw), Math.round(dh), ps.clip, ps.fog, th);
       }
 
-      // Player Car
       if (n === plN) {
         const pct = pl.speed / MAX_SPEED;
         const bounce = sim.offroad > 0
           ? ((Math.trunc(t * 36) & 1) * 2 * sim.offroad)
           : ((Math.trunc(t * 14) & 1) * (pct > 0.3 ? 1 : 0));
         const px = Math.round(SCREEN_W / 2 - 56 + shakeX * 0.01);
-        const py = Math.round(SCREEN_H - 61 - bounce);
+        const py = Math.round(SCREEN_H - 58 - 11 - bounce);
 
-        // Headlights on tarmac at night OR inside SEGF_TUNNEL!
         if (th.ambient < 230 || inTunnelPlayer) {
           for (let yy = SCREEN_H / 2 + 24; yy < py + 24; yy++) {
             const u = (yy - (SCREEN_H / 2 + 24)) / (py + 24 - (SCREEN_H / 2 + 24));
@@ -596,7 +601,6 @@ export class Renderer320x240 {
 
         this.drawCarSprite(sim, pl, px, py, 112, 58, SCREEN_H, 0, th);
 
-        // Twin Nitro / Pit Launch Exhaust Flames
         if (sim.nitroOn || sim.launchBoostTimer > 0) {
           for (const exOff of [36, 76]) {
             const ex = px + exOff;
@@ -606,22 +610,29 @@ export class Renderer320x240 {
               const fw = Math.max(1, 4 - Math.trunc((fy * 4) / flameLen));
               const cyan = sim.launchBoostTimer > 0;
               for (let fx = -fw; fx <= fw; fx++) {
-                this.pset(ex + fx, ey + fy, cyan ? 90 : 255, cyan ? 250 : 185 - fy * 10, cyan ? 255 : 70);
+                this.pset(ex + fx, ey + fy, cyan ? 90 : 255, cyan ? 185 - fy * 10 : 185 - fy * 10, cyan ? 255 : 70);
               }
             }
           }
+        }
+      }
+
+      // Crew members alongside or slightly behind the front axle (rear wheel stations / passed outer crew)
+      for (let m = 0; m < crewItems.length; m++) {
+        const item = crewItems[m];
+        if (item.segIdx === ps.idx && item.dzFromPlayer < 210) {
+          this.drawPitCrewItem(sim, ps, item, th);
         }
       }
     }
   }
 
   private drawSegmentRows(
-    sim: AkaRaceSimulator,
     ps: ProjSeg,
     clipY: number,
     th: ThemeColors,
     flags: number,
-    t: number,
+    _t: number,
     animOn: boolean
   ) {
     let yA = Math.ceil(ps.y2);
@@ -665,7 +676,6 @@ export class Renderer320x240 {
       this.fillSpan(y, cx + w, cx + rw, rumble32);
       this.fillSpan(y, cx - w, cx + w, road32);
 
-      // Start checkered line + grandstand flash glint!
       if (startLine) {
         const sq = (w * 2) / 10;
         for (let k = 0; k < 10; k++) {
@@ -673,61 +683,449 @@ export class Renderer320x240 {
           this.fillSpan(y, cx - w + k * sq, cx - w + (k + 1) * sq, chk);
         }
       } else if (band) {
-        // 3 road lanes
         for (let k = 1; k < 3; k++) {
           const lx = cx - w + (2 * w * k) / 3;
           this.fillSpan(y, lx - lw, lx + lw, lane32);
         }
       }
 
-      // PIT STOPS RENDERING: v1.2 Separated 3-Bay Pit Apron + Concrete Wall vs v1.1 Single Box
-      if (sim.features.pitModeV12) {
-        if (ps.idx >= 3 && ps.idx <= 44) {
-          // Tapered entry/exit apron on the right of the main road
-          let taper = 1.0;
-          if (ps.idx < PIT_WALL_FIRST) taper = (ps.idx - 3) / (PIT_WALL_FIRST - 3);
-          else if (ps.idx > PIT_WALL_END) taper = 1 - (ps.idx - PIT_WALL_END) / (44 - PIT_WALL_END);
+      // World-fixed Pit Complex: inner buffer + 3 fixed-marking pit boxes + wide outer stand apron
+      if (!startLine && ps.pit >= PIT_ENTRY && ps.pit <= PIT_EXIT_END) {
+        const taper = pitTaperAt(ps.pit);
+        const ax0 = cx + w * 1.04;
+        const lx0 = cx + w * (1.08 + PIT_STRIP_W * taper);
+        const ax1 = cx + w * (pitOuterAt(taper) - 0.10);
+        const walk1 = cx + w * (pitOuterAt(taper) + 0.60 * taper);
 
-          const ax0 = cx + w * 1.02;
-          const ax1 = cx + w * (1.02 + 1.02 * taper);
-          let apronRgb: [number, number, number] = [62, 68, 84];
+        // 1. Concrete inner safety margin (left) & wide outer stand apron (right, where technicians wait)
+        const slabEven = ((ps.idx >> 1) & 1) === 0;
+        const stripBase: [number, number, number] = slabEven ? [118, 124, 136] : [108, 114, 126];
+        const stripC = this.mixRgb(stripBase, th.fog, ps.fog);
+        const strip32 = this.pack(stripC[0], stripC[1], stripC[2]);
+        this.fillSpan(y, ax0, lx0, strip32);
+        this.fillSpan(y, ax1, walk1, strip32);
 
-          // Color-code the 3 distinct Pit Bays ("les différents pit stops")!
-          const pulse = animOn && ((ps.idx + Math.trunc(t * 6)) & 1) === 0;
-          if (ps.idx >= PIT_BAY_NITRO.start && ps.idx <= PIT_BAY_NITRO.end) {
-            apronRgb = pulse ? [24, 188, 232] : [22, 134, 178]; // Stand 1: Cyan N2O Express
-          } else if (ps.idx >= PIT_BAY_TYRES.start && ps.idx <= PIT_BAY_TYRES.end) {
-            apronRgb = pulse ? [242, 192, 34] : [192, 148, 28]; // Stand 2: Yellow Tyres & Alignment
-          } else if (ps.idx >= PIT_BAY_ENGINE.start && ps.idx <= PIT_BAY_ENGINE.end) {
-            apronRgb = pulse ? [226, 56, 52] : [168, 42, 46];   // Stand 3: Red Full Engine Garage
-          }
+        // 2. Service lane & 3 Pit Boxes — 100% world-fixed ground stripes (zero time scrolling!)
+        const segEven = (ps.idx & 1) === 0;
+        let bayFloorRgb: [number, number, number] = slabEven ? [62, 68, 82] : [56, 62, 76];
+        let bayEdgeRgb: [number, number, number] | null = null;
 
-          const apFog = this.mixRgb(apronRgb, th.fog, ps.fog);
-          this.fillSpan(y, ax0, ax1, this.pack(apFog[0], apFog[1], apFog[2]));
-          this.fillSpan(y, ax1 - lw, ax1 + lw, white32);
-
-          // Concrete Pit Wall separating main straight from the 3 pit bays!
-          if (ps.idx >= PIT_WALL_FIRST && ps.idx <= PIT_WALL_END) {
-            const wx0 = cx + w * (PIT_WALL_X - 0.035);
-            const wx1 = cx + w * (PIT_WALL_X + 0.035);
-            const wallCol = (ps.idx & 1) ? white32 : this.pack(220, 56, 48);
-            this.fillSpan(y, wx0, wx1, wallCol);
-          }
+        if (ps.idx >= PIT_BAY_NITRO.start && ps.idx <= PIT_BAY_NITRO.end) {
+          bayFloorRgb = segEven ? [36, 98, 128] : [30, 82, 110];
+          bayEdgeRgb = segEven ? [36, 200, 242] : [238, 244, 250];
+        } else if (ps.idx >= PIT_BAY_TYRES.start && ps.idx <= PIT_BAY_TYRES.end) {
+          bayFloorRgb = segEven ? [96, 84, 46] : [78, 70, 42];
+          bayEdgeRgb = segEven ? [246, 198, 38] : [38, 42, 52];
+        } else if (ps.idx >= PIT_BAY_ENGINE.start && ps.idx <= PIT_BAY_ENGINE.end) {
+          bayFloorRgb = segEven ? [108, 52, 56] : [88, 44, 50];
+          bayEdgeRgb = segEven ? [232, 58, 54] : [242, 242, 248];
         }
 
-        // Mid-Lap Express N2O Strip on right shoulder
-        if (flags & SEGF_MID_PIT) {
-          const mx0 = cx + w * 0.82;
-          const mx1 = cx + w * 1.28;
-          const mc = this.mixRgb(((ps.idx + Math.trunc(t * 8)) & 1) ? [38, 215, 250] : [28, 125, 165], th.fog, ps.fog);
-          this.fillSpan(y, mx0, mx1, this.pack(mc[0], mc[1], mc[2]));
+        const bayC = this.mixRgb(bayFloorRgb, th.fog, ps.fog);
+        this.fillSpan(y, lx0, ax1, this.pack(bayC[0], bayC[1], bayC[2]));
+
+        if (bayEdgeRgb) {
+          const edgeW = Math.max(2, w * 0.065);
+          const ec = this.mixRgb(bayEdgeRgb, th.fog, ps.fog);
+          const edge32 = this.pack(ec[0], ec[1], ec[2]);
+          this.fillSpan(y, lx0, lx0 + edgeW, edge32);
+          this.fillSpan(y, ax1 - edgeW, ax1, edge32);
         }
-      } else if (!startLine && ps.idx >= PIT_V11.first && ps.idx < PIT_V11.first + PIT_V11.len) {
-        // Legacy v1.1 single yellow box drawn directly on right lane
-        const inBox = ps.idx >= PIT_V11.box0 && ps.idx < PIT_V11.box1;
-        const pc = this.mixRgb(inBox ? [210, 175, 45] : [98, 104, 122], th.fog, ps.fog);
-        this.fillSpan(y, cx + w * PIT_V11.x0, cx + w * PIT_V11.x1, this.pack(pc[0], pc[1], pc[2]));
+
+        // Crisp world-fixed outer white pit line
+        this.fillSpan(y, ax1 - lw, ax1 + lw, white32);
+
+        // Fixed transverse box entry & stop lines + center guide dashes
+        const isBoxStart =
+          ps.idx === PIT_BAY_NITRO.start ||
+          ps.idx === PIT_BAY_TYRES.start ||
+          ps.idx === PIT_BAY_ENGINE.start;
+        const isBoxEnd =
+          ps.idx === PIT_BAY_NITRO.end ||
+          ps.idx === PIT_BAY_TYRES.end ||
+          ps.idx === PIT_BAY_ENGINE.end;
+
+        if ((isBoxStart && u > 0.72) || (isBoxEnd && u < 0.28)) {
+          this.fillSpan(y, lx0, ax1, white32);
+        } else if (
+          ps.idx >= PIT_BAY_TYRES.start &&
+          ps.idx <= PIT_BAY_ENGINE.end &&
+          segEven
+        ) {
+          const mid = (lx0 + ax1) * 0.5;
+          this.fillSpan(y, mid - lw, mid + lw, white32);
+        }
+
+        // Fixed yellow/black hazard curb & concrete pit wall (from Bay 2 onward)
+        if (ps.pit >= PIT_WALL_START_REPO && ps.pit <= PIT_WALL_END) {
+          const hazRgb: [number, number, number] = segEven ? [245, 205, 40] : [30, 30, 36];
+          const hazC = this.mixRgb(hazRgb, th.fog, ps.fog);
+          this.fillSpan(y, lx0 - lw, lx0 + lw, this.pack(hazC[0], hazC[1], hazC[2]));
+
+          const wx0 = cx + w * (PIT_WALL_X - 0.035);
+          const wx1 = cx + w * (PIT_WALL_X + 0.035);
+          const wallCol = segEven ? white32 : this.pack(220, 56, 48);
+          this.fillSpan(y, wx0, wx1, wallCol);
+        }
       }
+
+      if (flags & SEGF_MID_PIT) {
+        const mx0 = cx + w * 0.82;
+        const mx1 = cx + w * 1.28;
+        const mc = this.mixRgb((ps.idx & 1) ? [38, 205, 240] : [28, 125, 165], th.fog, ps.fog);
+        this.fillSpan(y, mx0, mx1, this.pack(mc[0], mc[1], mc[2]));
+      }
+    }
+  }
+
+  private blitTechSprite(
+    frameIdx: TechFrame,
+    x: number,
+    y: number,
+    dw: number,
+    dh: number,
+    clipY: number,
+    flip: boolean,
+    fog: number,
+    th: ThemeColors
+  ) {
+    if (dw <= 0 || dh <= 0) return;
+    const px = TECH_PX[frameIdx] || TECH_PX[0];
+    const x0 = Math.max(0, x);
+    const x1 = Math.min(SCREEN_W, x + dw);
+    const ymax = Math.min(SCREEN_H, clipY);
+    const y0 = Math.max(0, y);
+    const y1 = Math.min(ymax, y + dh);
+    if (x0 >= x1 || y0 >= y1) return;
+
+    const amb = Math.min(256, th.ambient < 256 ? th.ambient + 32 : 256);
+
+    for (let sy = y0; sy < y1; sy++) {
+      const srcY = Math.min(TECH_H - 1, Math.trunc(((sy - y) * TECH_H) / dh));
+      const rowOff = srcY * TECH_W;
+      for (let sx = x0; sx < x1; sx++) {
+        let srcX = Math.min(TECH_W - 1, Math.trunc(((sx - x) * TECH_W) / dw));
+        if (flip) srcX = TECH_W - 1 - srcX;
+        const palIdx = px[rowOff + srcX];
+        if (!palIdx) continue;
+        const base = TECH_PAL_RGB[palIdx];
+        let r = (base[0] * amb) >> 8;
+        let g = (base[1] * amb) >> 8;
+        let b = (base[2] * amb) >> 8;
+        if (fog > 0) {
+          const inv = 256 - fog;
+          r = (r * inv + th.fog[0] * fog) >> 8;
+          g = (g * inv + th.fog[1] * fog) >> 8;
+          b = (b * inv + th.fog[2] * fog) >> 8;
+        }
+        this.buf32[sy * SCREEN_W + sx] = (255 << 24) | (b << 16) | (g << 8) | r;
+      }
+    }
+  }
+
+  private drawPitStaticScenery(ps: ProjSeg, th: ThemeColors, t: number) {
+    if (ps.fog > 235 || ps.w1 < 10 || ps.w1 > 370) return;
+
+    const w = ps.w1;
+    const sy = Math.round(ps.y1);
+    const rectFog = (x0: number, y0: number, x1: number, y1: number, col: [number, number, number]) => {
+      const fc = this.mixRgb(col, th.fog, ps.fog);
+      const packed = this.pack(fc[0], fc[1], fc[2]);
+      const ya = Math.max(0, y0);
+      const yb = Math.min(Math.min(SCREEN_H, ps.clip), y1);
+      for (let yy = ya; yy < yb; yy++) this.fillSpan(yy, x0, x1, packed);
+    };
+
+    // 1. Entry board with blinking amber beacon
+    if (ps.pit === PIT_ENTRY + 1) {
+      const bx = Math.round(ps.x1 + w * 1.52);
+      const bw = Math.round(w * 0.20) + 3;
+      const bh = Math.round(w * 0.12) + 3;
+      rectFog(bx + (bw >> 1) - 1, sy - bh - (bh >> 1), bx + (bw >> 1) + 1, sy, [140, 145, 155]);
+      rectFog(bx, sy - bh - (bh >> 1), bx + bw, sy - (bh >> 1), [24, 148, 210]);
+      rectFog(bx + 1, sy - bh - (bh >> 1) + 1, bx + bw - 1, sy - (bh >> 1) - Math.trunc(bh / 3), [250, 250, 250]);
+      if ((Math.trunc(t * 6) & 1) === 1) {
+        rectFog(bx + (bw >> 1) - 2, sy - bh - (bh >> 1) - 4, bx + (bw >> 1) + 2, sy - bh - (bh >> 1) - 1, [255, 195, 40]);
+      }
+    }
+
+    // 2. Outer Stand Awnings & Support Posts (at x = 2.95 on the outside, overhanging the waiting crew)
+    const isTyreCanopy = ps.idx === PIT_BAY_TYRES.start + 1 || ps.idx === PIT_BAY_TYRES.end - 1;
+    const isEngCanopy = ps.idx === PIT_BAY_ENGINE.start + 1 || ps.idx === PIT_BAY_ENGINE.end - 1;
+    if (isTyreCanopy || isEngCanopy) {
+      const postX = Math.round(ps.x1 + w * 2.96);
+      const hh = Math.round(w * 0.30) + 10;
+      const postW = Math.max(2, Math.round(w * 0.018));
+      rectFog(postX, sy - hh, postX + postW, sy, [168, 176, 192]);
+      const rx0 = Math.round(ps.x1 + w * 2.38);
+      const roofH = Math.max(3, Math.round(w * 0.028));
+      const mainRoofCol: [number, number, number] = isTyreCanopy ? [232, 182, 32] : [224, 48, 48];
+      rectFog(rx0, sy - hh - roofH, postX + postW + 2, sy - hh + 1, mainRoofCol);
+      const stripeStep = Math.max(6, Math.round(w * 0.08));
+      for (let k = rx0; k < postX + postW + 2; k += stripeStep) {
+        rectFog(k, sy - hh - roofH, Math.min(postX + postW + 2, k + (stripeStep >> 1)), sy - hh + 1, [246, 248, 252]);
+      }
+    }
+
+    // 3. Safety cones along the fixed left hazard curb
+    if (ps.pit >= PIT_WALL_START_REPO && ps.pit <= PIT_WALL_END && ps.idx % 4 === 0) {
+      const cx0 = Math.round(ps.x1 + w * (1.08 + PIT_STRIP_W)) - 1;
+      const ch = Math.round(w * 0.065) + 2;
+      for (let k = 0; k < ch; k++) {
+        const hw2 = Math.trunc((ch - k) / 3) + (k === ch - 1 ? 0 : 1);
+        const stripe = Math.trunc((k * 3) / Math.max(1, ch)) === 1;
+        rectFog(cx0 - hw2, sy - ch + k, cx0 + hw2 + 1, sy - ch + k + 1, stripe ? [250, 250, 250] : [255, 120, 20]);
+      }
+    }
+
+    // 4. Spare tyre stacks on the outside stand apron (next to waiting crew)
+    if (
+      ps.idx === PIT_BAY_TYRES.start + 1 ||
+      ps.idx === PIT_BAY_TYRES.end - 1 ||
+      ps.idx === PIT_BAY_ENGINE.start + 2
+    ) {
+      const tx = Math.round(ps.x1 + w * 2.86);
+      const rr = Math.round(w * 0.045) + 2;
+      for (let k = 0; k < 3; k++) {
+        const y1 = sy - Math.trunc((k * rr * 3) / 2);
+        rectFog(tx - rr * 2, y1 - Math.trunc((rr * 3) / 2), tx + rr * 2, y1, [26, 26, 30]);
+        rectFog(tx - rr, y1 - rr, tx + rr, y1 - (rr >> 1) - 1, [150, 155, 168]);
+      }
+    }
+  }
+
+  private buildPitCrewRenderItems(
+    sim: AkaRaceSimulator,
+    segCount: number,
+    playerWorldZ: number,
+    t: number
+  ): PitCrewRenderItem[] {
+    const items: PitCrewRenderItem[] = [];
+    const roadLen = sim.road.length;
+
+    const smooth01 = (v: number) => {
+      const c = Math.max(0, Math.min(1, v));
+      return c * c * (3 - 2 * c);
+    };
+
+    for (let b = 0 as 0 | 1; b < 2; b = (b + 1) as 0 | 1) {
+      const crew = sim.pitBayCrews[b];
+      const bayStart = b === 0 ? PIT_BAY_TYRES.start : PIT_BAY_ENGINE.start;
+      const u = crew.progress;
+      const isIdle = crew.phase === 'IDLE_OUTSIDE' || u <= 0.002;
+      const isWorking = crew.phase === 'WORKING' && u >= 0.99;
+      const isWalkingIn = crew.phase === 'WALKING_IN';
+
+      // Crew roster: ALL wait outside on the right stand apron (x = 2.64 .. 2.74)
+      // Left-flank mechanics follow a 3-leg U-path around the front nose so they never cross through the car!
+      const specs: Array<{
+        side: 'right' | 'left' | 'hood' | 'lollipop';
+        idleSegOff: number;
+        idleX: number;
+        workDz: number;
+        workDx: number;
+        carriesTyre: boolean;
+      }> = [
+        { side: 'right', idleSegOff: 1.7, idleX: 2.65, workDz: 165, workDx: 0.255, carriesTyre: true },
+        { side: 'left', idleSegOff: 2.6, idleX: 2.74, workDz: 170, workDx: -0.255, carriesTyre: false },
+        { side: 'right', idleSegOff: 3.8, idleX: 2.65, workDz: 375, workDx: 0.245, carriesTyre: false },
+        { side: 'left', idleSegOff: 4.7, idleX: 2.74, workDz: 375, workDx: -0.245, carriesTyre: true },
+      ];
+
+      if (b === 1) {
+        specs.push({
+          side: 'hood',
+          idleSegOff: 5.5,
+          idleX: 2.70,
+          workDz: 472,
+          workDx: 0.08,
+          carriesTyre: false,
+        });
+      }
+
+      specs.push({
+        side: 'lollipop',
+        idleSegOff: 6.3,
+        idleX: 2.63,
+        workDz: 565,
+        workDx: 0.16,
+        carriesTyre: false,
+      });
+
+      for (let mIdx = 0; mIdx < specs.length; mIdx++) {
+        const sp = specs[mIdx];
+        const idleZ = (bayStart + sp.idleSegOff) * SEG_LEN;
+        const targetZ = crew.anchorZ + sp.workDz;
+        const targetX = crew.anchorX + sp.workDx;
+
+        let worldZ = idleZ;
+        let worldX = sp.idleX;
+        let dir: 1 | -1 = -1; // Facing pit lane (-1) while waiting outside
+
+        if (isIdle) {
+          worldZ = idleZ;
+          worldX = sp.idleX;
+          dir = -1;
+        } else if (isWorking) {
+          worldZ = targetZ;
+          worldX = targetX;
+          dir = sp.side === 'left' ? 1 : -1;
+        } else if (sp.side === 'left') {
+          // 3-leg path around the front bumper (noseZ) so mechanics never pass through the car
+          const noseZ = crew.anchorZ + (sp.workDz < 250 ? 555 : 532);
+          const rightClearX = Math.max(crew.anchorX + 0.29, 2.52);
+          const leftClearX = crew.anchorX - 0.26;
+
+          if (u <= 0.34) {
+            const k = smooth01(u / 0.34);
+            worldZ = idleZ + (noseZ - idleZ) * k;
+            worldX = sp.idleX + (rightClearX - sp.idleX) * k;
+            dir = isWalkingIn ? -1 : 1;
+          } else if (u <= 0.70) {
+            const k = smooth01((u - 0.34) / 0.36);
+            worldZ = noseZ;
+            worldX = rightClearX + (leftClearX - rightClearX) * k;
+            dir = isWalkingIn ? -1 : 1;
+          } else {
+            const k = smooth01((u - 0.70) / 0.30);
+            worldZ = noseZ + (targetZ - noseZ) * k;
+            worldX = leftClearX + (targetX - leftClearX) * k;
+            dir = 1;
+          }
+        } else {
+          // Direct path between outside stand apron and right flank / front nose
+          const k = smooth01(u);
+          worldZ = idleZ + (targetZ - idleZ) * k;
+          worldX = sp.idleX + (targetX - sp.idleX) * k;
+          dir = isWalkingIn ? -1 : 1;
+        }
+
+        const isLolli = sp.side === 'lollipop';
+        const showGoSign =
+          isLolli &&
+          crew.phase === 'WALKING_OUT' &&
+          sim.lollipopState === 'GO' &&
+          sim.lollipopGoTimer > 0;
+
+        let frame: TechFrame = TechFrame.IDLE;
+        let yOffset = 0;
+
+        if (isLolli) {
+          if (isWorking || (isWalkingIn && u > 0.88)) {
+            frame = TechFrame.RAISED;
+            dir = -1;
+          } else if (!isIdle) {
+            frame = (Math.trunc(t * 7 + mIdx) & 1) ? TechFrame.WALK_A : TechFrame.WALK_B;
+            yOffset = Math.trunc(t * 12 + mIdx) & 1;
+          } else {
+            frame = TechFrame.IDLE;
+          }
+        } else if (isWorking) {
+          // Strictly work ONLY when beside the stopped car!
+          frame = TechFrame.WORK;
+          yOffset = Math.trunc(t * 14 + mIdx) & 1;
+        } else if (!isIdle) {
+          if (sp.carriesTyre && isWalkingIn && u < 0.82) {
+            frame = TechFrame.TYRE;
+          } else {
+            frame = (Math.trunc(t * 7.5 + mIdx * 1.3 + b) & 1) ? TechFrame.WALK_A : TechFrame.WALK_B;
+          }
+          yOffset = Math.trunc(t * 12 + mIdx) & 1;
+        }
+
+        const wrappedZ = ((worldZ % roadLen) + roadLen) % roadLen;
+        const segIdx = Math.trunc(wrappedZ / SEG_LEN) % segCount;
+        const pctInSeg = (wrappedZ % SEG_LEN) / SEG_LEN;
+        let dzFromPlayer = wrappedZ - playerWorldZ;
+        if (dzFromPlayer < -roadLen * 0.5) dzFromPlayer += roadLen;
+        if (dzFromPlayer > roadLen * 0.5) dzFromPlayer -= roadLen;
+
+        items.push({
+          segIdx,
+          pctInSeg,
+          dzFromPlayer,
+          worldX,
+          dir,
+          frame,
+          yOffset,
+          isWorking: isWorking && !isLolli,
+          isLollipop: isLolli,
+          showGoSign,
+        });
+      }
+    }
+
+    // Sort far-to-near within the same segment for clean overlap
+    items.sort((a, b) => b.dzFromPlayer - a.dzFromPlayer);
+    return items;
+  }
+
+  private drawPitCrewItem(
+    sim: AkaRaceSimulator,
+    ps: ProjSeg,
+    item: PitCrewRenderItem,
+    th: ThemeColors
+  ) {
+    if (ps.fog > 235) return;
+    // Skip technicians already behind the camera plane (dzFromPlayer < -760 means z_cam < 80)
+    if (item.dzFromPlayer < -60) return;
+
+    const pct = item.pctInSeg;
+    const sc = ps.s1 + (ps.s2 - ps.s1) * pct;
+    const wAt = sc * ROAD_W * (SCREEN_W / 2);
+    if (wAt < 9 || wAt > 365) return;
+
+    const roadCenterX = ps.x1 + (ps.x2 - ps.x1) * pct;
+    const sy = Math.round(ps.y1 + (ps.y2 - ps.y1) * pct);
+    const clipY = Math.min(SCREEN_H, Math.max(ps.clip, sy + 1));
+
+    const dh = Math.round(wAt * 0.185) + 8;
+    const dw = Math.max(4, Math.trunc((dh * TECH_W) / TECH_H));
+    const cxp = Math.round(roadCenterX + wAt * item.worldX);
+    const bx = cxp - (dw >> 1);
+    const by = sy - dh - item.yOffset;
+    const flip = item.dir < 0;
+
+    this.blitTechSprite(item.frame, bx, by, dw, dh, clipY, flip, ps.fog, th);
+
+    // Lollipop pole & STOP / READY / GO disc
+    if (item.isLollipop && (item.frame === TechFrame.RAISED || item.showGoSign)) {
+      const gloveCol = flip ? TECH_W - 1 - 22 : 22;
+      const lx = bx + Math.round((dw * gloveCol) / TECH_W);
+      const poleTop = sy - Math.round(dh * 1.24);
+      const rad = Math.max(3, Math.round(dw * 0.24));
+
+      const poleC = this.mixRgb([212, 218, 228], th.fog, ps.fog);
+      const polePacked = this.pack(poleC[0], poleC[1], poleC[2]);
+      for (let yy = Math.max(0, poleTop); yy < Math.min(clipY, sy); yy++) {
+        this.fillSpan(yy, lx, lx + 2, polePacked);
+      }
+
+      const discRaw: [number, number, number] =
+        item.showGoSign || sim.lollipopState === 'GO'
+          ? [52, 242, 115]
+          : sim.lollipopState === 'READY'
+          ? [255, 210, 48]
+          : [245, 52, 48];
+      const discC = this.mixRgb(discRaw, th.fog, ps.fog);
+      for (let dy = -rad; dy <= rad; dy++) {
+        for (let dx = -rad; dx <= rad; dx++) {
+          if (dx * dx + dy * dy <= rad * rad) {
+            this.psetClip(lx + dx, poleTop + dy, clipY, discC[0], discC[1], discC[2]);
+          }
+        }
+      }
+    }
+
+    // Pneumatic impact wrench sparks when actively working beside the car
+    if (item.isWorking && item.yOffset > 0) {
+      const ex = cxp + item.dir * ((dw >> 1) + 1);
+      const ey = sy - Math.trunc((dh * 2) / 5);
+      const sp1 = this.mixRgb([255, 232, 95], th.fog, ps.fog);
+      const sp2 = this.mixRgb([255, 148, 38], th.fog, ps.fog);
+      this.psetClip(ex, ey, clipY, sp1[0], sp1[1], sp1[2]);
+      this.psetClip(ex + item.dir, ey - 1, clipY, sp2[0], sp2[1], sp2[2]);
+      this.psetClip(ex - item.dir, ey + 1, clipY, sp2[0], sp2[1], sp2[2]);
     }
   }
 
@@ -763,44 +1161,6 @@ export class Renderer320x240 {
     }
   }
 
-  private drawPitCrewAtBay(sim: AkaRaceSimulator, ps: ProjSeg, t: number) {
-    const sc = ps.s1;
-    const sx = Math.round(ps.x1 + sc * (PIT_LANE_X1 + 0.08) * ROAD_W * (SCREEN_W / 2));
-    const sy = Math.round(ps.y1);
-    const h = Math.max(6, Math.round(280 * sc * (SCREEN_W / 2)));
-    const w = Math.max(3, Math.round(h * 0.42));
-    if (sy - h >= ps.clip || sx < 0 || sx >= SCREEN_W) return;
-
-    // 2 Pit Crew Mechanics in racing suits (step closer to car when pitting!)
-    const stepIn = sim.pitting ? Math.round(w * 2.1) : 0;
-    const bob = sim.pitting ? (Math.trunc(t * 14) & 1) : 0;
-    for (let m = 0; m < 2; m++) {
-      const mx = sx - stepIn + m * (w + 3);
-      const my = sy - h + bob;
-      for (let yy = Math.max(0, my); yy < Math.min(ps.clip, sy); yy++) {
-        const rel = (yy - my) / h;
-        const suit = rel < 0.25 ? [245, 245, 250] : rel < 0.68 ? [230, 52, 46] : [34, 38, 52];
-        for (let xx = mx; xx < mx + w; xx++) this.pset(xx, yy, suit[0], suit[1], suit[2]);
-      }
-    }
-
-    // Lollipop Sign held out over the Engine Pit Bay!
-    const signX = sx - Math.round(w * 2.8);
-    const signY = sy - Math.round(h * 1.15);
-    const rad = Math.max(3, Math.round(w * 0.75));
-    const isGo = sim.lollipopState === 'GO';
-    const isReady = sim.lollipopState === 'READY';
-    const signCol = isGo ? [52, 242, 115] : isReady ? [255, 210, 48] : [245, 52, 48];
-    for (let yy = signY; yy < Math.min(ps.clip, sy); yy++) this.pset(signX, yy, 210, 215, 225);
-    for (let dy = -rad; dy <= rad; dy++) {
-      for (let dx = -rad; dx <= rad; dx++) {
-        if (dx * dx + dy * dy <= rad * rad && signY + dy < ps.clip) {
-          this.pset(signX + dx, signY + dy, signCol[0], signCol[1], signCol[2]);
-        }
-      }
-    }
-  }
-
   private drawSceneryProp(
     sim: AkaRaceSimulator,
     ps: ProjSeg,
@@ -832,7 +1192,6 @@ export class Renderer320x240 {
           this.pset(x, y, chk ? 250 : 28, chk ? 250 : 32, chk ? 255 : 44);
         }
       }
-      // Grandstand camera flash sparkles on start gantry!
       if (animOn && (Math.trunc(t * 11 + ps.idx) % 5) === 0) {
         const fx = x0 + ((Math.trunc(t * 97) * 37) % Math.max(4, dw));
         for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) this.blendPixel(fx + dx, y0 + dy, 255, 255, 235, 210);
@@ -881,7 +1240,6 @@ export class Renderer320x240 {
         for (let xx = cx - hw; xx <= cx + hw; xx++) this.pset(xx, yy, col[0], col[1], col[2]);
       }
     } else if (pr.spr === 'CHEVRON') {
-      // Sequential chasing >>> LED chevrons in v1.2!
       const lit = !animOn || ((Math.trunc(t * 7) + Math.trunc(ps.idx / 5)) % 3) !== 0;
       const bg = [24, 28, 38];
       const fg = lit ? [255, 208, 36] : [130, 96, 24];
@@ -895,35 +1253,6 @@ export class Renderer320x240 {
           this.pset(xx, yy, c[0], c[1], c[2]);
         }
       }
-    } else if (pr.spr === 'PIT_SIGN') {
-      // Pit lane entry board + blinking amber beacon!
-      for (let yy = Math.max(0, y); yy < yEnd; yy++) {
-        for (let xx = x; xx < x + dw; xx++) {
-          this.pset(xx, yy, yy < y + dh * 0.65 ? 24 : 140, yy < y + dh * 0.65 ? 148 : 145, yy < y + dh * 0.65 ? 210 : 155);
-        }
-      }
-      if (!animOn || (Math.trunc(t * 6) & 1) === 0) {
-        const bx = x + (dw >> 1);
-        for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) this.blendPixel(bx + dx, y - 2 + dy, 255, 195, 40, 220);
-      }
-    } else if (pr.spr === 'PIT_CANOPY') {
-      // Circuit-themed Pit Garage Canopy over Bay 3!
-      const roofH = Math.max(3, Math.round(dh * 0.32));
-      const legW = Math.max(2, Math.round(dw * 0.08));
-      const roofCol = sim.road.theme === THEME_CITY ? [0, 215, 245] : sim.road.theme === THEME_GLACIER ? [245, 130, 40] : [228, 48, 48];
-      for (let yy = Math.max(0, y); yy < yEnd; yy++) {
-        if (yy < y + roofH) {
-          for (let xx = x; xx < x + dw; xx++) {
-            const stripe = ((xx - x) >> 3) & 1;
-            this.pset(xx, yy, stripe ? 248 : roofCol[0], stripe ? 248 : roofCol[1], stripe ? 252 : roofCol[2]);
-          }
-        } else {
-          for (let lx = 0; lx < legW; lx++) {
-            this.pset(x + lx, yy, 180, 186, 200);
-            this.pset(x + dw - legW + lx, yy, 180, 186, 200);
-          }
-        }
-      }
     } else if (pr.spr === 'LIGHTHOUSE') {
       const cx = x + (dw >> 1);
       for (let yy = Math.max(0, y); yy < yEnd; yy++) {
@@ -934,7 +1263,6 @@ export class Renderer320x240 {
           this.pset(xx, yy, redBand ? 220 : 244, redBand ? 48 : 244, redBand ? 48 : 248);
         }
       }
-      // ROTATING LIGHTHOUSE SWEEP BEAM in Night Harbor / Palm Bay!
       const lanternY = y + Math.round(dh * 0.14);
       if (lanternY > 0 && lanternY < ps.clip) {
         const dir = animOn ? Math.sin(t * 2.1) : 1;
@@ -956,7 +1284,6 @@ export class Renderer320x240 {
         for (let dy = -3; dy <= 3; dy++) for (let dx = -4; dx <= 4; dx++) this.blendPixel(headX + dx, y + dy, 255, 220, 130, 180);
       }
     } else {
-      // Buildings, Containers, Cranes, Rocks, Neon Boards, Chalets, Ice
       const isNeon = pr.spr === 'NEON_BOARD';
       const pulse = animOn && (Math.trunc(t * 5 + ps.idx) & 1) === 0;
       const baseCol: [number, number, number] = isNeon
@@ -978,7 +1305,6 @@ export class Renderer320x240 {
           this.pset(xx, yy, c[0], c[1], c[2]);
         }
       }
-      // Red blinking aircraft warning beacon atop harbor cranes!
       if (pr.spr === 'CRANE' && animOn && (Math.trunc(t * 3.5) & 1) === 0 && y > 0 && y < ps.clip) {
         this.blendPixel(x + (dw >> 1), y, 255, 45, 45, 240);
         this.blendPixel(x + (dw >> 1) + 1, y, 255, 45, 45, 240);
@@ -1001,80 +1327,33 @@ export class Renderer320x240 {
     if (!atlas || !atlas.ready) return;
 
     const sv = c.steerVis;
-    const mode = sim.features.spriteMode;
     const look = c.look % CAR_COUNT;
+    const pct = Math.max(0, Math.min(1, c.speed / MAX_SPEED));
 
-    let frame: CarSpriteFrame = atlas.unified3dFrames[look][0];
-    let flip = false;
-    let isWide = false;
-    let uStage = 0;
+    // Locked-in 3D-Hybrid rigid rotation + GitHub commit 20f8e8f speed-dependent turn angle!
+    const effAbs =
+      c.isPlayer && sim.spinT > 0 && sim.spinDir !== 0
+        ? 1.0
+        : Math.abs(sv) * (0.22 + 0.78 * pct * pct);
+    const flip =
+      c.isPlayer && sim.spinT > 0 && sim.spinDir !== 0 ? sim.spinDir > 0 : sv > 0;
 
-    if (mode === 'v11_locked') {
-      frame = atlas.unified3dFrames[look]?.[0] || atlas.repo2c7Frames[look]?.[0];
-    } else if (mode === 'v11_front_bug') {
-      if (Math.abs(sv) > 0.25 || (c.isPlayer && sim.spinT > 0)) {
-        frame = atlas.v11OrigBad3q[look] || atlas.repo2c7Frames[look][6];
-        flip = sv > 0;
-        isWide = true;
-        uStage = 1;
-      } else {
-        frame = atlas.v11OrigRear[look] || atlas.repo2c7Frames[look][0];
-      }
-    } else if (mode === 'unified_3d') {
-      // Pure rigid Z-buffered 3D rotation of the 2c7 Stage-6 GT car (ZERO 2D image cross-fade!)
-      const effAbs = c.isPlayer && sim.spinT > 0 && sim.spinDir !== 0 ? 1.0 : Math.abs(sv);
-      flip = c.isPlayer && sim.spinT > 0 && sim.spinDir !== 0 ? sim.spinDir > 0 : sv > 0;
-      const sel = getUnifiedRigidFrame(atlas, look, effAbs, sim.features.subStageBlend);
-      frame = sel.frame;
-      isWide = frame.w === CAR_ART3Q_W;
-      uStage = sel.uStage;
-    } else if (mode === 'hybrid_clean' && sim.features.subStageBlend) {
-      let fStage = 0;
-      if (c.isPlayer && sim.spinT > 0 && sim.spinDir !== 0) {
-        fStage = 6;
-        flip = sim.spinDir > 0;
-      } else {
-        const absSv = Math.abs(sv);
-        fStage = absSv <= 0.05 ? 0 : Math.min(6, ((absSv - 0.05) / 0.80) * 6);
-        flip = sv > 0;
-      }
-      frame = blendContinuousStage(atlas.hybridCleanFrames[look], look, fStage);
-      isWide = frame.w === CAR_ART3Q_W;
-      uStage = fStage / 6;
-    } else {
-      const thresholds =
-        mode === 'hybrid_clean'
-          ? [0.09, 0.22, 0.36, 0.50, 0.65, 0.80]
-          : [0.18, 0.30, 0.42, 0.55, 0.70, 0.88];
-      let stage = 0;
-      if (c.isPlayer && sim.spinT > 0 && sim.spinDir !== 0) {
-        stage = CAR_ART_MID + 1;
-        flip = sim.spinDir > 0;
-      } else {
-        const absSv = Math.abs(sv);
-        while (stage <= CAR_ART_MID && absSv >= thresholds[stage]) stage++;
-        flip = sv > 0;
-      }
-      const bank = mode === 'repo_2c7e371' ? atlas.repo2c7Frames : atlas.hybridCleanFrames;
-      frame = bank[look]?.[stage] || atlas.unified3dFrames[look][stage];
-      isWide = stage > 0;
-      uStage = stage / (CAR_ART_MID + 1);
-    }
+    const sel = getUnifiedRigidFrame(atlas, look, effAbs, true);
+    const frame = sel.frame;
+    const isWide = frame.w === CAR_ART3Q_W;
+    const uStage = sel.uStage;
 
     const dhA = Math.max(2, Math.round((dw * CAR_ART_H) / CAR_ART_W));
     const pw = isWide ? Math.round((dw * CAR_ART3Q_W) / CAR_ART_W) : dw;
     const px0 = isWide ? x - ((pw - dw) >> 1) : x;
-    const ya =
-      mode === 'repo_2c7e371' || mode === 'hybrid_clean' || mode === 'unified_3d'
-        ? y + Math.round((dh * 52) / 58) - Math.round((dhA * (93 + Math.round(4 * uStage))) / 100)
-        : y + Math.round((dh * 54) / 58) - dhA;
+    const ya = y + Math.round((dh * 52) / 58) - Math.round((dhA * (93 + Math.round(4 * uStage))) / 100);
 
-    // Soft elliptical ground contact shadow under tyres
-    const shadowY = ya + dhA - Math.max(1, Math.round(dhA * 0.08));
+    // Unmirrored directional ground contact shadow (sun fixed lower-left, matches commit 9ebfcfe)
+    const shadowY = ya + dhA - Math.max(1, Math.round(dhA * 0.06));
     if (shadowY > 0 && shadowY < clipY && shadowY < SCREEN_H) {
-      const rx = Math.round(pw * 0.45);
-      const cx = px0 + (pw >> 1);
-      for (let sy = shadowY - 2; sy <= shadowY + 2; sy++) {
+      const rx = Math.round(pw * 0.44);
+      const cx = px0 + (pw >> 1) + Math.round(dw * 0.03);
+      for (let sy = shadowY - 2; sy <= shadowY + 3; sy++) {
         if (sy < 0 || sy >= clipY || sy >= SCREEN_H) continue;
         for (let sx = Math.max(0, cx - rx); sx < Math.min(SCREEN_W, cx + rx); sx++) {
           this.blendPixel(sx, sy, 6, 8, 14, 130);
@@ -1082,7 +1361,6 @@ export class Renderer320x240 {
       }
     }
 
-    // Blit RGB565 car sprite with ambient & fog shading
     const yStart = Math.max(0, ya);
     const yStop = Math.min(Math.min(SCREEN_H, clipY), ya + dhA);
     const xStart = Math.max(0, px0);
@@ -1109,8 +1387,7 @@ export class Renderer320x240 {
       }
     }
 
-    // Rear Brake Lights & Night Taillight Glow aligned to exact rear lampBox (for repo_2c7e371, hybrid_clean & studio_3d)
-    if ((c.braking || th.ambient < 245) && dw > 9 && fog < 198 && mode !== 'v11_front_bug') {
+    if ((c.braking || th.ambient < 245) && dw > 9 && fog < 198) {
       const lb = frame.lampBox;
       const rectAlpha = c.braking ? 185 : 105;
       const glowAlpha = c.braking ? 135 : 70;
@@ -1149,7 +1426,6 @@ export class Renderer320x240 {
   }
 
   private drawParticlesAndWeather(sim: AkaRaceSimulator, animOn: boolean) {
-    // Active impact / wrench / smoke particles
     for (const pt of sim.particles) {
       const alpha = Math.max(0, Math.min(220, Math.trunc((pt.life / pt.maxLife) * 220)));
       const hs = pt.size >> 1;
@@ -1160,7 +1436,6 @@ export class Renderer320x240 {
       }
     }
 
-    // Circuit Weather Micro-Animations: Alpine Snow Flurries & Glacier Polar Crystals!
     if (animOn && (sim.road.theme === THEME_ALPINE || sim.road.theme === THEME_GLACIER)) {
       const t = sim.globalTime;
       const count = sim.road.theme === THEME_GLACIER ? 38 : 28;
@@ -1187,51 +1462,82 @@ export class Renderer320x240 {
     ctx.font = 'bold 9px "JetBrains Mono", monospace';
     ctx.textBaseline = 'top';
 
-    const shadowText = (txt: string, x: number, y: number, color = '#FFFFFF', font?: string) => {
+    const shadowText = (
+      txt: string,
+      x: number,
+      y: number,
+      color = '#FFFFFF',
+      font?: string,
+      maxWidth?: number
+    ) => {
       if (font) ctx.font = font;
       ctx.fillStyle = '#090B10';
-      ctx.fillText(txt, x + 1, y + 1);
-      ctx.fillStyle = color;
-      ctx.fillText(txt, x, y);
+      if (maxWidth !== undefined) {
+        ctx.fillText(txt, x + 1, y + 1, maxWidth);
+        ctx.fillStyle = color;
+        ctx.fillText(txt, x, y, maxWidth);
+      } else {
+        ctx.fillText(txt, x + 1, y + 1);
+        ctx.fillStyle = color;
+        ctx.fillText(txt, x, y);
+      }
     };
 
-    // Position Top-Left
     shadowText(`P${pl.place}`, 7, 5, '#FFE866', 'bold 18px "Barlow Condensed", sans-serif');
     shadowText(`/${CAR_COUNT}`, 28, 11, '#E2E8F0', 'bold 10px "JetBrains Mono", monospace');
 
-    // Compact vs Full Position Tower (Gamebuino AKA L1 ergonomic improvement!)
     const ordered = [...sim.cars].sort((a, b) => a.place - b.place);
+    let lbRightEdge = 6;
     if (!sim.features.compactHudL1) {
+      ctx.font = 'bold 8px "JetBrains Mono", monospace';
+      let maxTagW = 42;
+      for (let i = 0; i < ordered.length; i++) {
+        const c = ordered[i];
+        const tag = c.platform !== 'AI' ? `${c.name.slice(0, 5)}` : c.name;
+        const tw = ctx.measureText(tag).width;
+        if (tw > maxTagW) maxTagW = tw;
+      }
+      const lbW = Math.min(82, Math.max(74, Math.ceil(26 + maxTagW + 6)));
+      lbRightEdge = 6 + lbW;
       ctx.fillStyle = 'rgba(8, 11, 20, 0.58)';
-      ctx.fillRect(6, 27, 74, CAR_COUNT * 10 + 4);
+      ctx.fillRect(6, 27, lbW, CAR_COUNT * 10 + 4);
       for (let i = 0; i < ordered.length; i++) {
         const c = ordered[i];
         const yy = 29 + i * 10;
         if (c.isPlayer) {
           ctx.fillStyle = 'rgba(255, 210, 60, 0.25)';
-          ctx.fillRect(7, yy - 1, 72, 9);
+          ctx.fillRect(7, yy - 1, lbW - 2, 9);
         }
         ctx.fillStyle = DRIVERS[c.look % CAR_COUNT].hex;
         ctx.fillRect(18, yy + 1, 5, 6);
         const tag = c.platform !== 'AI' ? `${c.name.slice(0, 5)}` : c.name;
         shadowText(`${i + 1}`, 8, yy, c.isPlayer ? '#FFE46B' : '#CBD5E1', 'bold 8px "JetBrains Mono", monospace');
-        shadowText(tag, 26, yy, c.isPlayer ? '#FFE46B' : c.isRemoteHuman ? '#67E8F9' : '#F8FAFC', 'bold 8px "JetBrains Mono", monospace');
+        shadowText(tag, 26, yy, c.isPlayer ? '#FFE46B' : c.isRemoteHuman ? '#67E8F9' : '#F8FAFC', 'bold 8px "JetBrains Mono", monospace', lbW - 30);
       }
     } else {
+      const compactLabel = `AKA COMPACT · ${pl.name}`;
+      ctx.font = 'bold 8px "JetBrains Mono", monospace';
+      const cw = Math.min(180, Math.ceil(ctx.measureText(compactLabel).width) + 10);
       ctx.fillStyle = 'rgba(8, 11, 20, 0.58)';
-      ctx.fillRect(6, 27, 84, 14);
-      shadowText(`AKA COMPACT · ${pl.name}`, 9, 30, '#67E8F9', 'bold 8px "JetBrains Mono", monospace');
+      ctx.fillRect(6, 27, cw, 14);
+      shadowText(compactLabel, 11, 30, '#67E8F9', 'bold 8px "JetBrains Mono", monospace', cw - 10);
     }
 
-    // Lap & Times Top-Right
     const lapStr = `LAP ${sim.playerLap()}/${sim.laps}`;
-    shadowText(lapStr, SCREEN_W - 68, 6, '#7DD3FC', 'bold 14px "Barlow Condensed", sans-serif');
-    shadowText(`TIME ${this.formatLapTime(sim.raceTime - pl.lapStart)}`, SCREEN_W - 86, 23, '#F8FAFC', 'bold 8px "JetBrains Mono", monospace');
+    ctx.font = 'bold 14px "Barlow Condensed", sans-serif';
+    const lapW = Math.ceil(ctx.measureText(lapStr).width);
+    shadowText(lapStr, SCREEN_W - 7 - lapW, 6, '#7DD3FC', 'bold 14px "Barlow Condensed", sans-serif');
+
+    ctx.font = 'bold 8px "JetBrains Mono", monospace';
+    const timeStr = `TIME ${this.formatLapTime(sim.raceTime - pl.lapStart)}`;
+    const timeW = Math.ceil(ctx.measureText(timeStr).width);
+    shadowText(timeStr, SCREEN_W - 7 - timeW, 23, '#F8FAFC', 'bold 8px "JetBrains Mono", monospace');
     if (pl.bestLap > 0) {
-      shadowText(`BEST ${this.formatLapTime(pl.bestLap)}`, SCREEN_W - 86, 33, '#FDE047', 'bold 8px "JetBrains Mono", monospace');
+      const bestStr = `BEST ${this.formatLapTime(pl.bestLap)}`;
+      const bestW = Math.ceil(ctx.measureText(bestStr).width);
+      shadowText(bestStr, SCREEN_W - 7 - bestW, 33, '#FDE047', 'bold 8px "JetBrains Mono", monospace');
     }
 
-    // Minimap Bottom-Left (with blinking Pit indicator when damage > 35%!)
     const mx0 = 6, my0 = SCREEN_H - 64;
     ctx.fillStyle = 'rgba(8, 11, 20, 0.56)';
     ctx.fillRect(mx0, my0, 58, 58);
@@ -1260,7 +1566,6 @@ export class Renderer320x240 {
       ctx.fillRect(px - (c.isPlayer ? 2 : 1.5), py - (c.isPlayer ? 2 : 1.5), c.isPlayer ? 4 : 3, c.isPlayer ? 4 : 3);
     }
 
-    // Bottom-Right Gauges: TYR, ENG, N2O + Digital/Arc Speedometer
     const drawBar = (bx: number, label: string, val01: number, colHex: string, warnBlink = false) => {
       const by = 184, bh = 44;
       ctx.fillStyle = 'rgba(8, 11, 20, 0.68)';
@@ -1270,57 +1575,106 @@ export class Renderer320x240 {
       ctx.fillRect(bx + 1, by + bh - h, 6, h);
       ctx.strokeStyle = warnBlink ? '#F87171' : '#94A3B8';
       ctx.strokeRect(bx + 0.5, by + 0.5, 7, bh - 1);
-      shadowText(label, bx - 2, by - 9, '#CBD5E1', 'bold 7px "JetBrains Mono", monospace');
+      ctx.font = 'bold 7px "JetBrains Mono", monospace';
+      const lw = ctx.measureText(label).width;
+      shadowText(label, Math.round(bx + 4 - lw / 2), by - 9, '#CBD5E1', 'bold 7px "JetBrains Mono", monospace');
     };
 
     const grip01 = 1 - sim.tyreWear;
     const eng01 = 1 - sim.damage;
-    drawBar(209, 'TYR', grip01, grip01 > 0.45 ? '#FACC15' : '#FB923C', sim.tyreWear > 0.75);
-    drawBar(223, 'ENG', eng01, eng01 > 0.5 ? '#4ADE80' : '#EF4444', sim.damage > 0.72);
-    drawBar(237, 'N2O', sim.nitro, '#38BDF8', false);
+    drawBar(203, 'TYR', grip01, grip01 > 0.45 ? '#FACC15' : '#FB923C', sim.tyreWear > 0.75);
+    drawBar(219, 'ENG', eng01, eng01 > 0.5 ? '#4ADE80' : '#EF4444', sim.damage > 0.72);
+    drawBar(235, 'N2O', sim.nitro, '#38BDF8', false);
 
-    // Speedometer Box
+    const spX = 250, spY = 184, spW = 64, spH = 50;
     ctx.fillStyle = 'rgba(8, 11, 20, 0.72)';
-    ctx.fillRect(252, 184, 62, 50);
+    ctx.fillRect(spX, spY, spW, spH);
     ctx.strokeStyle = 'rgba(148, 163, 184, 0.55)';
-    ctx.strokeRect(252.5, 184.5, 61, 49);
+    ctx.strokeRect(spX + 0.5, spY + 0.5, spW - 1, spH - 1);
     const kmh = Math.round(sim.speedKmh());
-    shadowText(`${kmh}`, 259, 192, '#FFFFFF', 'bold 22px "Barlow Condensed", sans-serif');
-    shadowText('KM/H', 292, 201, '#94A3B8', 'bold 8px "JetBrains Mono", monospace');
-    shadowText(`G${sim.gear}`, 259, 219, '#FBBF24', 'bold 9px "JetBrains Mono", monospace');
+    shadowText(`${kmh}`, spX + 6, spY + 8, '#FFFFFF', 'bold 21px "Barlow Condensed", sans-serif');
+    ctx.font = 'bold 8px "JetBrains Mono", monospace';
+    const kmhUnitW = Math.ceil(ctx.measureText('KM/H').width);
+    shadowText('KM/H', spX + spW - 5 - kmhUnitW, spY + 17, '#94A3B8', 'bold 8px "JetBrains Mono", monospace');
+    shadowText(`G${sim.gear}`, spX + 6, spY + 35, '#FBBF24', 'bold 9px "JetBrains Mono", monospace');
     if (sim.inPitLane) {
-      shadowText('PIT', 286, 219, '#38BDF8', 'bold 9px "JetBrains Mono", monospace');
+      ctx.font = 'bold 9px "JetBrains Mono", monospace';
+      const pitW = Math.ceil(ctx.measureText('PIT').width);
+      shadowText('PIT', spX + spW - 5 - pitW, spY + 35, '#38BDF8', 'bold 9px "JetBrains Mono", monospace');
     }
 
-    // v1.2 Live Pit Lane Telemetry Overlay when inside Pit Apron!
-    if (sim.features.pitModeV12 && (sim.inPitLane || sim.lollipopState === 'GO')) {
-      ctx.fillStyle = 'rgba(10, 15, 28, 0.86)';
-      ctx.fillRect(88, 42, 144, 34);
-      ctx.strokeStyle = sim.lollipopState === 'GO' ? '#4ADE80' : '#FACC15';
-      ctx.strokeRect(88.5, 42.5, 143, 33);
+    if (sim.inPitLane || sim.lollipopState === 'GO') {
+      const bayCrew =
+        sim.activePitBay === 'TYRES'
+          ? sim.pitBayCrews[0]
+          : sim.activePitBay === 'ENGINE'
+          ? sim.pitBayCrews[1]
+          : null;
       const bayTitle =
         sim.lollipopState === 'GO'
-          ? 'LOLLIPOP : GO! GO! (GAZ)'
+          ? 'LOLLIPOP : GO! VOIE LIBRE'
+          : bayCrew && bayCrew.phase === 'WORKING'
+          ? sim.activePitBay === 'TYRES'
+            ? 'STAND 2 · TRAVAIL EN COURS'
+            : 'STAND 3 · REVISION EN COURS'
+          : bayCrew && bayCrew.phase === 'WALKING_IN'
+          ? 'ARRET · ARRIVEE TECHNICIENS'
           : sim.activePitBay === 'NITRO'
           ? 'STAND 1 · N2O EXPRESS (<95)'
           : sim.activePitBay === 'TYRES'
-          ? 'STAND 2 · PNEUS & TRAIN (<38)'
+          ? 'STAND 2 · PNEUS (ARRET 0 KM/H)'
           : sim.activePitBay === 'ENGINE'
-          ? 'STAND 3 · REVISION MOTEUR (<30)'
-          : 'VOIE DES STANDS · 3 BOX';
-      shadowText(bayTitle, 94, 46, sim.lollipopState === 'GO' ? '#4ADE80' : '#FDE047', 'bold 8px "JetBrains Mono", monospace');
+          ? 'STAND 3 · MOTEUR (ARRET 0 KM/H)'
+          : 'VOIE DES STANDS · 85 KM/H';
+      const statsLine = `ENG ${Math.round(eng01 * 100)}% · TYR ${Math.round(grip01 * 100)}% · N2O ${Math.round(sim.nitro * 100)}%`;
+
+      ctx.font = 'bold 8px "JetBrains Mono", monospace';
+      const tw1 = ctx.measureText(bayTitle).width;
+      const tw2 = ctx.measureText(statsLine).width;
+      const availX0 = sim.features.compactHudL1 ? 6 : lbRightEdge + 6;
+      const maxBoxW = SCREEN_W - 6 - availX0;
+      const boxW = Math.min(maxBoxW, Math.ceil(Math.max(tw1, tw2)) + 18);
+      const boxH = 34;
+      const boxX = availX0 + Math.max(0, Math.floor((maxBoxW - boxW) / 2));
+      const boxY = 44;
+      const innerMaxW = boxW - 12;
+      const drawW1 = Math.min(tw1, innerMaxW);
+      const drawW2 = Math.min(tw2, innerMaxW);
+
+      ctx.fillStyle = 'rgba(10, 15, 28, 0.88)';
+      ctx.fillRect(boxX, boxY, boxW, boxH);
+      ctx.strokeStyle = sim.lollipopState === 'GO' ? '#4ADE80' : '#FACC15';
+      ctx.strokeRect(boxX + 0.5, boxY + 0.5, boxW - 1, boxH - 1);
       shadowText(
-        `ENG ${Math.round(eng01 * 100)}% · TYR ${Math.round(grip01 * 100)}% · N2O ${Math.round(sim.nitro * 100)}%`,
-        94,
-        59,
+        bayTitle,
+        boxX + Math.round((boxW - drawW1) / 2),
+        boxY + 5,
+        sim.lollipopState === 'GO' ? '#4ADE80' : '#FDE047',
+        'bold 8px "JetBrains Mono", monospace',
+        innerMaxW
+      );
+      shadowText(
+        statsLine,
+        boxX + Math.round((boxW - drawW2) / 2),
+        boxY + 19,
         '#E2E8F0',
-        'bold 8px "JetBrains Mono", monospace'
+        'bold 8px "JetBrains Mono", monospace',
+        innerMaxW
       );
     } else if (sim.damage > 0.42 && (Math.trunc(sim.globalTime * 4) & 1) === 0) {
-      shadowText('STAND A DROITE APRES LIGNE', 94, 46, '#FDBA74', 'bold 8px "JetBrains Mono", monospace');
+      const warnTxt = 'STAND A DROITE AVANT LIGNE';
+      ctx.font = 'bold 8px "JetBrains Mono", monospace';
+      const ww = Math.min(SCREEN_W - 92, ctx.measureText(warnTxt).width);
+      shadowText(
+        warnTxt,
+        Math.max(lbRightEdge + 6, Math.round((SCREEN_W - ww) / 2)),
+        46,
+        '#FDBA74',
+        'bold 8px "JetBrains Mono", monospace',
+        SCREEN_W - 92
+      );
     }
 
-    // Countdown Traffic Lights
     if (sim.screenState === 'COUNTDOWN') {
       const lit = sim.stateT < 1 ? 0 : sim.stateT < 2 ? 1 : sim.stateT < 3 ? 2 : 3;
       const green = sim.stateT >= 3.85;
@@ -1336,21 +1690,22 @@ export class Renderer320x240 {
       }
     }
 
-    // Center Banner Message
     if (sim.bannerTimer > 0 && sim.bannerText) {
       const [r, g, b] = sim.bannerColor;
-      ctx.font = 'bold 16px "Barlow Condensed", sans-serif';
+      ctx.font = 'bold 14px "Barlow Condensed", sans-serif';
       const tw = ctx.measureText(sim.bannerText).width;
-      shadowText(sim.bannerText, Math.round((SCREEN_W - tw) / 2), 86, `rgb(${r},${g},${b})`);
+      shadowText(sim.bannerText, Math.max(6, Math.round((SCREEN_W - tw) / 2)), 84, `rgb(${r},${g},${b})`);
     }
 
-    // Results Screen Overlay
     if (sim.screenState === 'RESULTS') {
       ctx.fillStyle = 'rgba(8, 11, 20, 0.84)';
       ctx.fillRect(18, 28, SCREEN_W - 36, SCREEN_H - 52);
       ctx.strokeStyle = '#F97316';
       ctx.strokeRect(18.5, 28.5, SCREEN_W - 37, SCREEN_H - 53);
-      shadowText('CLASSEMENT GRAND PRIX', 88, 34, '#FDE047', 'bold 14px "Barlow Condensed", sans-serif');
+      ctx.font = 'bold 14px "Barlow Condensed", sans-serif';
+      const titleTxt = 'CLASSEMENT GRAND PRIX';
+      const titleW = ctx.measureText(titleTxt).width;
+      shadowText(titleTxt, Math.round((SCREEN_W - titleW) / 2), 34, '#FDE047', 'bold 14px "Barlow Condensed", sans-serif');
       for (let i = 0; i < ordered.length; i++) {
         const c = ordered[i];
         const yy = 54 + i * 16;
@@ -1361,17 +1716,27 @@ export class Renderer320x240 {
         const platBadge = c.platform === 'AI' ? 'IA' : c.platform;
         const tStr = c.retired ? 'DNF' : this.formatLapTime(c.finishTime);
         shadowText(`${i + 1}. ${c.name} [${platBadge}]`, 28, yy, c.isPlayer ? '#FDE047' : '#F8FAFC', 'bold 9px "JetBrains Mono", monospace');
-        shadowText(tStr, 225, yy, '#CBD5E1', 'bold 9px "JetBrains Mono", monospace');
+        ctx.font = 'bold 9px "JetBrains Mono", monospace';
+        const tStrW = ctx.measureText(tStr).width;
+        shadowText(tStr, SCREEN_W - 26 - Math.ceil(tStrW), yy, '#CBD5E1', 'bold 9px "JetBrains Mono", monospace');
       }
-      shadowText('A / ESPACE : RELANCER LA COURSE', 74, 192, '#38BDF8', 'bold 9px "JetBrains Mono", monospace');
+      const restartTxt = 'A / ESPACE : RELANCER LA COURSE';
+      ctx.font = 'bold 9px "JetBrains Mono", monospace';
+      const restartW = ctx.measureText(restartTxt).width;
+      shadowText(restartTxt, Math.round((SCREEN_W - restartW) / 2), 192, '#38BDF8', 'bold 9px "JetBrains Mono", monospace');
     }
 
     if (sim.paused) {
-      ctx.fillStyle = 'rgba(8, 11, 20, 0.78)';
-      ctx.fillRect(92, 92, 136, 48);
+      const pauseTxt = 'PAUSE (RUN / ENTREE)';
+      ctx.font = 'bold 11px "JetBrains Mono", monospace';
+      const pw = Math.ceil(ctx.measureText(pauseTxt).width);
+      const pBoxW = Math.max(148, pw + 24);
+      const pBoxX = Math.round((SCREEN_W - pBoxW) / 2);
+      ctx.fillStyle = 'rgba(8, 11, 20, 0.82)';
+      ctx.fillRect(pBoxX, 92, pBoxW, 48);
       ctx.strokeStyle = '#FACC15';
-      ctx.strokeRect(92.5, 92.5, 135, 47);
-      shadowText('PAUSE (RUN / ENTREE)', 106, 110, '#FDE047', 'bold 11px "JetBrains Mono", monospace');
+      ctx.strokeRect(pBoxX + 0.5, 92.5, pBoxW - 1, 47);
+      shadowText(pauseTxt, Math.round((SCREEN_W - pw) / 2), 110, '#FDE047', 'bold 11px "JetBrains Mono", monospace');
     }
 
     ctx.restore();

@@ -47,11 +47,11 @@ export const CppExportPanel: React.FC<CppExportPanelProps> = ({ onDownloadMagent
             Sources C++ & Optimisations Matérielles Gamebuino AKA
           </h2>
           <p className="text-sm text-slate-300 leading-relaxed">
-            Code source prêt à intégrer dans le dépôt{' '}
-            <code className="font-mono text-orange-300">Jicehel-Aka/Race3D-AKA</code> : générateur Z-buffer 3D unifié{' '}
-            <code className="font-mono text-slate-200">generate_unified_3d_car_art.py</code> (même carrosserie GT de 0° à 35°, zéro fondu), voie des stands à 3 box + bouton{' '}
-            <code className="font-mono text-slate-200">BTN_L1</code>, table trigonométrique{' '}
-            <code className="font-mono text-slate-200">s_sin8[256]</code> et client Wi-Fi WebSocket binaire 20 octets.
+            Correctifs et briques C++ prêts pour le dépôt{' '}
+            <code className="font-mono text-orange-300">Jicehel-Aka/Race3D-AKA</code> (commit{' '}
+            <code className="font-mono text-slate-200">f0b651e</code>) : correction de l’animation des techniciens aux stands (<code className="font-mono text-slate-200">render.cpp</code> & <code className="font-mono text-slate-200">import_technicians.py</code>), rastériseur 3D virgule fixe{' '}
+            <code className="font-mono text-slate-200">Q16.16</code> sans conversion flottante par pixel, et LUT trigonométrique{' '}
+            <code className="font-mono text-slate-200">s_sin8[256]</code>.
           </p>
         </div>
 
@@ -61,7 +61,7 @@ export const CppExportPanel: React.FC<CppExportPanelProps> = ({ onDownloadMagent
             className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Download className="w-4 h-4" />
-            Planche PNG (#FF00FF)
+            Planche 3D Hybride (#FF00FF)
           </button>
           <button
             onClick={() => handleDownloadFile(activeFile)}
@@ -76,9 +76,14 @@ export const CppExportPanel: React.FC<CppExportPanelProps> = ({ onDownloadMagent
       {/* Quantitative ESP32-S3 Audit Row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-[#121826] border border-slate-800 rounded-xl p-4 space-y-1">
-          <p className="text-xs text-slate-400">Rotation 3D Unifiée</p>
-          <p className="text-2xl font-bold font-mono text-slate-100 tabular-nums">0% Fondu 2D</p>
-          <p className="text-xs text-slate-400">Même GT 2c7 de 0° à 35° · Z-buffer rigide</p>
+          <p className="text-xs text-slate-400">Stands & HUD (f0b651e)</p>
+          <p className="text-2xl font-bold font-mono text-slate-100 tabular-nums">4 Phases + Fixe</p>
+          <p className="text-xs text-slate-400">Attente extérieure · Bandes fixes · Cadre HUD auto</p>
+        </div>
+        <div className="bg-[#121826] border border-slate-800 rounded-xl p-4 space-y-1">
+          <p className="text-xs text-slate-400">Rastériseur 3D Virgule Fixe</p>
+          <p className="text-2xl font-bold font-mono text-slate-100 tabular-nums">3× à 5× gain</p>
+          <p className="text-xs text-slate-400">Boucle pixel Q16.16 · Zéro stall FPU→ALU LX7</p>
         </div>
         <div className="bg-[#121826] border border-slate-800 rounded-xl p-4 space-y-1">
           <p className="text-xs text-slate-400">Coût CPU Fond & Aurores</p>
@@ -89,11 +94,6 @@ export const CppExportPanel: React.FC<CppExportPanelProps> = ({ onDownloadMagent
           <p className="text-xs text-slate-400">Trame Réseau AKA Wi-Fi</p>
           <p className="text-2xl font-bold font-mono text-slate-100 tabular-nums">20 octets @ 20 Hz</p>
           <p className="text-xs text-slate-400">0 allocation JSON · memcpy direct struct pack(1)</p>
-        </div>
-        <div className="bg-[#121826] border border-slate-800 rounded-xl p-4 space-y-1">
-          <p className="text-xs text-slate-400">Ergonomie Gâchette L1</p>
-          <p className="text-2xl font-bold font-mono text-slate-100 tabular-nums">BTN_L1 câblé</p>
-          <p className="text-xs text-slate-400">Limiteur stand 85 km/h & mode HUD compact 320×240</p>
         </div>
       </div>
 

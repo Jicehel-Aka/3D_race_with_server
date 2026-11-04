@@ -1,42 +1,27 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { RotateCcw, Volume2, VolumeX, Wrench, Zap } from 'lucide-react';
 import { SCREEN_H, SCREEN_W, TRACK_DEFS, type ClientCarTelemetry, type RoomStatePayload } from '../shared/raceProtocol';
-import type { SpriteMode } from '../engine/carArt3D';
 import { AkaRaceSimulator, type InputState } from '../engine/raceSim';
 import { Renderer320x240 } from '../engine/renderer320';
 import { synthAudio } from '../engine/synthAudio';
 
 interface AkaConsoleStageProps {
   simRef: React.MutableRefObject<AkaRaceSimulator>;
-  spriteMode: SpriteMode;
-  subStageBlend: boolean;
-  steerVisRate: number;
-  pitModeV12: boolean;
   circuitAnimV12: boolean;
-  onChangeSpriteMode: (mode: SpriteMode) => void;
-  onToggleSubStageBlend: (enabled: boolean) => void;
-  onChangeSteerVisRate: (rate: number) => void;
-  onTogglePitMode: (enabled: boolean) => void;
   onToggleCircuitAnim: (enabled: boolean) => void;
   multiplayerJoined: boolean;
   roomState: RoomStatePayload | null;
   mySlot: number;
   rttMs: number;
   onSendTelemetry: (t: ClientCarTelemetry) => void;
-  onOpenTab: (tab: 'multiplayer' | 'sprites' | 'pits' | 'cpp') => void;
+  onOpenTab: (tab: 'multiplayer' | 'pits' | 'cpp') => void;
 }
+
+const DIFF_LABELS = ['Facile', 'Normal', 'Difficile', 'Expert'];
 
 export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
   simRef,
-  spriteMode,
-  subStageBlend,
-  steerVisRate,
-  pitModeV12,
   circuitAnimV12,
-  onChangeSpriteMode,
-  onToggleSubStageBlend,
-  onChangeSteerVisRate,
-  onTogglePitMode,
   onToggleCircuitAnim,
   multiplayerJoined,
   roomState,
@@ -61,23 +46,12 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
     bay: 'NONE',
   });
 
-  // Keyboard listener (Arrows / WASD / ZQSD + Space/X Gas + Z/B Brake + C/Shift Nitro + L/Tab L1 + Enter Pause)
-  // Keyboard listener + 'V' hotkey to cycle GitHub 2c7e371 <-> Studio 3D <-> Hybrid live mid-corner!
+  // Keyboard listener (Arrows / WASD / ZQSD + Space/X Gas + Z/B Brake + C/Shift Nitro + L L1 + Enter Pause)
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       const inInput = (document.activeElement?.tagName || '') === 'INPUT';
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code) && !inInput) {
         e.preventDefault();
-      }
-      if (e.code === 'KeyV' && !e.repeat && !inInput) {
-        const cur = simRef.current.features.spriteMode;
-        const next: SpriteMode =
-          cur === 'unified_3d'
-            ? 'repo_2c7e371'
-            : cur === 'repo_2c7e371'
-            ? 'hybrid_clean'
-            : 'unified_3d';
-        onChangeSpriteMode(next);
       }
       keysRef.current[e.code] = true;
     };
@@ -90,7 +64,7 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
     };
-  }, [onChangeSpriteMode, simRef]);
+  }, []);
 
   // Main 60 FPS Gamebuino AKA Framebuffer Loop + 20 Hz Multiplayer Telemetry Emit
   useEffect(() => {
@@ -181,7 +155,7 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
               onMouseLeave={() => setHold('l1', false)}
               onTouchStart={(e) => { e.preventDefault(); setHold('l1', true); }}
               onTouchEnd={() => setHold('l1', false)}
-              className="px-3 py-1.5 text-xs font-mono font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-md whitespace-nowrap cursor-pointer"
+              className="px-3 py-1.5 text-xs font-mono font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-md whitespace-nowrap shrink-0 cursor-pointer"
               title="Touche L : Limiteur Stand / HUD Compact"
             >
               L1 · Limiteur / HUD
@@ -195,7 +169,7 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={() => setAudioOn(synthAudio.toggleAudio())}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors whitespace-nowrap cursor-pointer ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 audioOn
                   ? 'bg-orange-600/20 border-orange-500 text-orange-200'
                   : 'bg-slate-900 border-slate-700 text-slate-300 hover:text-white'
@@ -210,7 +184,7 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
               onMouseLeave={() => setHold('c', false)}
               onTouchStart={(e) => { e.preventDefault(); setHold('c', true); }}
               onTouchEnd={() => setHold('c', false)}
-              className="px-3 py-1.5 text-xs font-mono font-semibold text-sky-200 bg-sky-950/60 hover:bg-sky-900/70 border border-sky-700/60 rounded-md whitespace-nowrap cursor-pointer"
+              className="px-3 py-1.5 text-xs font-mono font-semibold text-sky-200 bg-sky-950/60 hover:bg-sky-900/70 border border-sky-700/60 rounded-md whitespace-nowrap shrink-0 cursor-pointer"
             >
               R1 · N2O
             </button>
@@ -218,7 +192,7 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
         </div>
 
         {/* 320x240 Crisp Pixel Screen Bezel */}
-        <div className="relative bg-[#070A10] border-2 border-slate-800 rounded-xl p-2.5 sm:p-3 shadow-lg">
+        <div className="relative bg-[#070A10] border-2 border-slate-800 rounded-xl p-2.5 sm:p-3">
           <canvas
             ref={canvasRef}
             width={SCREEN_W}
@@ -258,7 +232,7 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
               ▶
             </button>
             <span className="text-xs text-slate-400 ml-1 hidden sm:inline">
-              Clavier : <strong className="text-slate-200">← →</strong> tourner · <strong className="text-slate-200">↑ / Espace</strong> gaz · <strong className="text-slate-200">↓ / Z</strong> frein · <strong className="text-orange-300">V</strong> basculer Sprites 3/4
+              Clavier : <strong className="text-slate-200">← →</strong> tourner · <strong className="text-slate-200">↑ / Espace</strong> gaz · <strong className="text-slate-200">↓ / Z</strong> frein · <strong className="text-slate-200">C</strong> nitro · <strong className="text-slate-200">L</strong> limiteur
             </span>
           </div>
 
@@ -270,7 +244,7 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
               onMouseLeave={() => setHold('b', false)}
               onTouchStart={(e) => { e.preventDefault(); setHold('b', true); }}
               onTouchEnd={() => setHold('b', false)}
-              className="px-3.5 h-11 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-rose-600 text-rose-200 font-mono font-bold text-xs border border-slate-700 cursor-pointer select-none whitespace-nowrap"
+              className="px-3.5 h-11 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-rose-600 text-rose-200 font-mono font-bold text-xs border border-slate-700 cursor-pointer select-none whitespace-nowrap shrink-0"
             >
               B · Frein
             </button>
@@ -280,7 +254,7 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
               onMouseLeave={() => setHold('c', false)}
               onTouchStart={(e) => { e.preventDefault(); setHold('c', true); }}
               onTouchEnd={() => setHold('c', false)}
-              className="px-3.5 h-11 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-sky-600 text-sky-200 font-mono font-bold text-xs border border-slate-700 cursor-pointer select-none whitespace-nowrap"
+              className="px-3.5 h-11 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-sky-600 text-sky-200 font-mono font-bold text-xs border border-slate-700 cursor-pointer select-none whitespace-nowrap shrink-0"
             >
               C · N2O
             </button>
@@ -290,7 +264,7 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
               onMouseLeave={() => setHold('a', false)}
               onTouchStart={(e) => { e.preventDefault(); setHold('a', true); }}
               onTouchEnd={() => setHold('a', false)}
-              className="px-4 h-11 rounded-lg bg-orange-600 hover:bg-orange-500 active:bg-orange-400 text-white font-mono font-bold text-xs cursor-pointer select-none whitespace-nowrap"
+              className="px-4 h-11 rounded-lg bg-orange-600 hover:bg-orange-500 active:bg-orange-400 text-white font-mono font-bold text-xs cursor-pointer select-none whitespace-nowrap shrink-0"
             >
               A · Gaz
             </button>
@@ -298,97 +272,29 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
         </div>
       </div>
 
-      {/* Right 5 Cols: Live Engineering Bench & Instant Teleport Controls */}
+      {/* Right 5 Cols: Streamlined Race Control & Remaining Undecided Option */}
       <div className="lg:col-span-5 bg-[#121826] border border-slate-800 rounded-2xl p-5 sm:p-6 flex flex-col justify-between space-y-6">
         <div className="space-y-5">
           <div className="space-y-1">
-            <p className="text-xs font-mono text-slate-400">
-              Essai en piste · Touche V = bascule instantanée des sprites en virage
-            </p>
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+              <span>GitHub f0b651e</span>
+              <span aria-hidden="true">·</span>
+              <span>Sprites 3D Hybride</span>
+              <span aria-hidden="true">·</span>
+              <span>Stands 3 Box & Techniciens corrigés</span>
+            </div>
             <h2 className="text-2xl font-bold font-display tracking-tight text-slate-100">
-              Comparaison en Course & Options à la Carte
+              Contrôle de Course & Stands
             </h2>
           </div>
 
-          {/* 1. Sprites Turning Mode Switch + Smoothness Tuning */}
+          {/* 01. Circuit Selection */}
           <div className="space-y-2.5">
             <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-slate-200">01. Transition 3/4 arrière (Touche V = A/B)</span>
-              <button
-                onClick={() => onOpenTab('sprites')}
-                className="text-orange-400 hover:text-orange-300 font-medium cursor-pointer"
-              >
-                Comparateur zoomé →
-              </button>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5 p-1 bg-[#0B0F17] border border-slate-800 rounded-lg">
-              <button
-                onClick={() => onChangeSpriteMode('unified_3d')}
-                className={`py-2 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap truncate cursor-pointer ${
-                  spriteMode === 'unified_3d'
-                    ? 'bg-emerald-600 text-white'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                3D Hybride
-              </button>
-              <button
-                onClick={() => onChangeSpriteMode('repo_2c7e371')}
-                className={`py-2 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap truncate cursor-pointer ${
-                  spriteMode === 'repo_2c7e371'
-                    ? 'bg-orange-600 text-white'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                GitHub 2c7
-              </button>
-              <button
-                onClick={() => onChangeSpriteMode('hybrid_clean')}
-                className={`py-2 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap truncate cursor-pointer ${
-                  spriteMode === 'hybrid_clean'
-                    ? 'bg-slate-700 text-white'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                Hybride (Fondu)
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-1.5 text-xs">
-              <button
-                onClick={() => onToggleSubStageBlend(!subStageBlend)}
-                className={`px-2.5 py-1.5 rounded-md border font-mono transition-colors whitespace-nowrap truncate cursor-pointer ${
-                  subStageBlend
-                    ? 'bg-emerald-950/40 border-emerald-700/60 text-emerald-200'
-                    : 'bg-[#0B0F17] border-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {spriteMode === 'unified_3d'
-                  ? `Pas 3D : ${subStageBlend ? '19 angles (1.6°)' : '7 paliers (4.8°)'}`
-                  : `Fondu 2D : ${subStageBlend ? 'ON' : 'OFF'}`}
-              </button>
-              <button
-                onClick={() => {
-                  const next = steerVisRate <= 5.5 ? 7.2 : steerVisRate <= 7.5 ? 9.5 : 5.4;
-                  onChangeSteerVisRate(next);
-                }}
-                className="px-2.5 py-1.5 rounded-md border border-slate-800 bg-[#0B0F17] hover:border-slate-700 text-slate-200 font-mono transition-colors whitespace-nowrap truncate cursor-pointer tabular-nums"
-              >
-                Inertie virage : {steerVisRate.toFixed(1)}
-              </button>
-            </div>
-          </div>
-
-          {/* 2. Circuit Selector + Optional Animations Toggle */}
-          <div className="space-y-2 pt-2 border-t border-slate-800/80">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-slate-200">02. Circuit & Animations (Optionnel)</span>
-              <button
-                onClick={() => onToggleCircuitAnim(!circuitAnimV12)}
-                className="text-sky-400 hover:text-sky-300 font-mono cursor-pointer"
-              >
-                {circuitAnimV12 ? 'Animations v1.2 : ON' : 'Décors origine 2c7 : ON'}
-              </button>
+              <span className="font-semibold text-slate-200">01. Sélection du Circuit</span>
+              <span className="font-mono text-slate-400 tabular-nums">
+                IA : {DIFF_LABELS[difficulty]}
+              </span>
             </div>
             <div className="grid grid-cols-2 gap-2">
               {TRACK_DEFS.map((t) => (
@@ -396,10 +302,10 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
                   key={t.id}
                   disabled={multiplayerJoined}
                   onClick={() => handleChangeTrack(t.id)}
-                  className={`px-3 py-2 text-xs font-mono text-left rounded-lg border transition-colors whitespace-nowrap truncate cursor-pointer disabled:opacity-50 ${
+                  className={`px-3 py-2 text-xs font-mono text-left rounded-lg transition-colors whitespace-nowrap truncate cursor-pointer disabled:opacity-50 ${
                     trackId === t.id
-                      ? 'bg-slate-800 border-orange-500 text-white'
-                      : 'bg-[#0B0F17] border-slate-800 text-slate-400 hover:text-slate-200'
+                      ? 'bg-orange-600 text-white font-semibold'
+                      : 'bg-slate-900/80 text-slate-300 hover:bg-slate-800 hover:text-white'
                   }`}
                 >
                   0{t.id + 1} · {t.name}
@@ -408,44 +314,41 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
             </div>
           </div>
 
-          {/* 3. Optional Pit Stops & Spin Test */}
-          <div className="space-y-2.5 pt-2 border-t border-slate-800/80">
+          {/* 02. Pit Crew & Track Scenarios */}
+          <div className="space-y-2.5 pt-3 border-t border-slate-800/80">
             <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-slate-200">03. Stands (Optionnel) & Tests de virage</span>
+              <span className="font-semibold text-slate-200">02. Scénarios Stands & Techniciens</span>
               <button
-                onClick={() => onTogglePitMode(!pitModeV12)}
-                className="text-amber-400 hover:text-amber-300 font-mono cursor-pointer"
+                onClick={() => onOpenTab('pits')}
+                className="text-orange-400 hover:text-orange-300 font-medium whitespace-nowrap shrink-0 cursor-pointer"
               >
-                {pitModeV12 ? 'Stands : 3 Box v1.2' : 'Stand : Origine 2c7'}
+                Audit des techniciens →
               </button>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <button
-                onClick={() => simRef.current.triggerTestSpinAndDamage()}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-rose-200 bg-rose-950/40 hover:bg-rose-900/50 border border-rose-700/50 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
-              >
-                <Zap className="w-3.5 h-3.5" />
-                Tester Choc + Spin 3/4
-              </button>
-              <button
-                onClick={() => {
-                  onTogglePitMode(true);
-                  simRef.current.teleportToPitApproach(0.62);
-                }}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-amber-200 bg-amber-950/40 hover:bg-amber-900/50 border border-amber-700/50 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                onClick={() => simRef.current.teleportToPitApproach(0.62)}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-amber-200 bg-amber-950/40 hover:bg-amber-900/50 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Wrench className="w-3.5 h-3.5" />
-                Essayer 3 Stands
+                Tester Arrêt Stands
+              </button>
+              <button
+                onClick={() => simRef.current.triggerTestSpinAndDamage()}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-rose-200 bg-rose-950/40 hover:bg-rose-900/50 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                Simuler Choc & Dégâts
               </button>
               <button
                 onClick={() => {
                   onToggleCircuitAnim(true);
                   simRef.current.teleportToTunnelOrHighlight();
                 }}
-                className="px-3 py-2 text-xs font-medium text-sky-200 bg-sky-950/40 hover:bg-sky-900/50 border border-sky-700/50 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                className="px-3 py-2 text-xs font-medium text-sky-200 bg-sky-950/40 hover:bg-sky-900/50 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
-                Essayer Tunnel / Décor
+                Voir Section Tunnel
               </button>
               <button
                 onClick={() => {
@@ -453,10 +356,47 @@ export const AkaConsoleStage: React.FC<AkaConsoleStageProps> = ({
                   setDifficulty(nextDiff);
                   simRef.current.setupRace(trackId, nextDiff, 3, true);
                 }}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Relancer Départ
+                Départ ({DIFF_LABELS[(difficulty + 1) % 4]})
+              </button>
+            </div>
+          </div>
+
+          {/* 03. Remaining Undecided Visual Proposal */}
+          <div className="space-y-2.5 pt-3 border-t border-slate-800/80">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-slate-200">
+                03. Option ouverte : Ciel animé & Tunnels
+              </span>
+              <button
+                onClick={() => onOpenTab('cpp')}
+                className="text-slate-400 hover:text-slate-200 font-mono whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Patch C++ →
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#0B0F17] rounded-lg">
+              <button
+                onClick={() => onToggleCircuitAnim(true)}
+                className={`py-2 px-3 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  circuitAnimV12
+                    ? 'bg-slate-800 text-white'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                LUT Ciel & SEGF_TUNNEL
+              </button>
+              <button
+                onClick={() => onToggleCircuitAnim(false)}
+                className={`py-2 px-3 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  !circuitAnimV12
+                    ? 'bg-slate-800 text-white'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Décors Origine GitHub
               </button>
             </div>
           </div>

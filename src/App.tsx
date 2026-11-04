@@ -3,76 +3,32 @@ import {
   generateMagentaSpriteSheetDataUrl,
   initCarArtAtlas,
   type CarArtAtlas,
-  type SpriteMode,
 } from './engine/carArt3D';
 import { AkaRaceSimulator } from './engine/raceSim';
 import { useMultiplayerRoom } from './hooks/useMultiplayerRoom';
 import { AkaConsoleStage } from './components/AkaConsoleStage';
 import { MultiplayerLobbyPanel } from './components/MultiplayerLobbyPanel';
-import { SpriteWorkbench } from './components/SpriteWorkbench';
 import { PitAndCircuitGuide } from './components/PitAndCircuitGuide';
 import { CppExportPanel } from './components/CppExportPanel';
 import { CPP_PATCH_FILES } from './data/cppPatches';
 import type { RoomStatePayload } from './shared/raceProtocol';
 
-type ActiveTab = 'simulator' | 'multiplayer' | 'sprites' | 'pits' | 'cpp';
+type ActiveTab = 'simulator' | 'pits' | 'multiplayer' | 'cpp';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('sprites');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('simulator');
   const [atlas, setAtlas] = useState<CarArtAtlas | null>(null);
   const simRef = useRef<AkaRaceSimulator>(new AkaRaceSimulator());
-  const [spriteMode, setSpriteMode] = useState<SpriteMode>('unified_3d');
-  const [subStageBlend, setSubStageBlend] = useState<boolean>(true);
-  const [steerVisRate, setSteerVisRate] = useState<number>(5.4);
-  const [pitModeV12, setPitModeV12] = useState<boolean>(false);
-  const [circuitAnimV12, setCircuitAnimV12] = useState<boolean>(false);
-
-  const handleSelectSpriteMode = useCallback((mode: SpriteMode) => {
-    setSpriteMode(mode);
-    simRef.current.features.spriteMode = mode;
-    const label =
-      mode === 'unified_3d'
-        ? 'SPRITES : ROTATION 3D HYBRIDE (ZERO MORPHING)'
-        : mode === 'repo_2c7e371'
-        ? 'SPRITES : GITHUB 2C7E371 (OPTICAL FLOW)'
-        : mode === 'hybrid_clean'
-        ? 'SPRITES : ANCIEN HYBRIDE (FONDU 2D)'
-        : 'SPRITES : ARRIERE FIXE 0 DEG';
-    simRef.current.showBanner(
-      label,
-      mode === 'unified_3d'
-        ? [130, 255, 180]
-        : mode === 'repo_2c7e371'
-        ? [255, 200, 110]
-        : [160, 195, 235],
-      1.8
-    );
-  }, []);
-
-  const handleToggleSubStageBlend = useCallback((enabled: boolean) => {
-    setSubStageBlend(enabled);
-    simRef.current.features.subStageBlend = enabled;
-    simRef.current.showBanner(
-      enabled ? 'ANGLES 3D HYBRIDE : 19 PAS (1.6 DEG)' : 'ANGLES 3D HYBRIDE : 7 PALIERS AKA (4.8 DEG)',
-      enabled ? [130, 255, 180] : [200, 210, 230],
-      1.5
-    );
-  }, []);
-
-  const handleChangeSteerVisRate = useCallback((rate: number) => {
-    setSteerVisRate(rate);
-    simRef.current.features.steerVisSmoothRate = rate;
-    simRef.current.showBanner(`INERTIE VIRAGE STEERVIS : ${rate.toFixed(1)}`, [255, 215, 110], 1.5);
-  }, []);
-
-  const handleTogglePitMode = useCallback((enabled: boolean) => {
-    setPitModeV12(enabled);
-    simRef.current.features.pitModeV12 = enabled;
-  }, []);
+  const [circuitAnimV12, setCircuitAnimV12] = useState<boolean>(true);
 
   const handleToggleCircuitAnim = useCallback((enabled: boolean) => {
     setCircuitAnimV12(enabled);
     simRef.current.features.circuitAnimV12 = enabled;
+    simRef.current.showBanner(
+      enabled ? 'CIEL LUT SIN8 & PORTIQUES TUNNEL : ON' : 'DECORS ORIGINE GITHUB : ON',
+      enabled ? [130, 235, 255] : [200, 210, 230],
+      1.5
+    );
   }, []);
 
   useEffect(() => {
@@ -88,14 +44,13 @@ export default function App() {
   const mp = useMultiplayerRoom(handleServerSnapshot);
 
   const handleDownloadPackBundle = () => {
-    // Download combined markdown/C++ integration bundle + magenta sheet if ready
     const bundleLines: string[] = [
-      '# Pack Améliorations Race3D-AKA v1.2 (Gamebuino AKA ESP32-S3 + PC SDL2)',
+      '# Pack Correctifs & Briques C++ Race3D-AKA (Gamebuino AKA ESP32-S3 + PC SDL2)',
       '',
-      'Ce fichier regroupe les correctifs prêts à intégrer dans https://github.com/Jicehel-Aka/Race3D-AKA :',
-      '1. Rotation 3D Hybride (Avant Bas Calibré + Texture Stage 6) : Même GT de 0° à 29°, Z-buffer 3D rigide avec rétro-projection fidèle de la vue 3/4',
-      '2. Voie des stands sécurisée à 3 box spécialisés (N2O Express, Pneus & Géométrie, Garage Moteur + Lollipop GO!)',
-      '3. Animations temps réel des 6 circuits (LUT int16_t s_sin8[256] 60 FPS + tunnels SEGF_TUNNEL)',
+      'Synchronisé sur https://github.com/Jicehel-Aka/Race3D-AKA (commit f0b651e) :',
+      '1. Chorégraphie 4 phases des techniciens (attente extérieure, contournement avant à l’arrêt, bandes au sol fixes, travail en poste, départ immédiat) + cadre HUD auto-ajusté',
+      '2. Animations temps réel des 6 circuits (LUT int16_t s_sin8[256] 60 FPS + portiques SEGF_TUNNEL)',
+      '3. Architecture rastériseur 3D virgule fixe Q16.16 (int32_t + table réciproque 1/z pour ESP32-S3 LX7)',
       '4. Client multijoueur temps réel Wi-Fi WebSocket binaire 20 octets (ESP32-S3 & PC)',
       '',
     ];
@@ -108,7 +63,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'Race3D_AKA_v1.2_Patches_Bundle.cpp';
+    a.download = 'Race3D_AKA_Patches_Bundle.cpp';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -117,16 +72,10 @@ export default function App() {
 
   const handleDownloadMagentaSheet = () => {
     if (!atlas) return;
-    const src: 'unified_3d' | 'hybrid_clean' | 'repo_2c7e371' =
-      spriteMode === 'repo_2c7e371'
-        ? 'repo_2c7e371'
-        : spriteMode === 'hybrid_clean'
-        ? 'hybrid_clean'
-        : 'unified_3d';
-    const dataUrl = generateMagentaSpriteSheetDataUrl(atlas, src, false);
+    const dataUrl = generateMagentaSpriteSheetDataUrl(atlas, 'unified_3d', false);
     const a = document.createElement('a');
     a.href = dataUrl;
-    a.download = `cars_sheet_${src}.png`;
+    a.download = 'cars_sheet_unified_3d.png';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -145,7 +94,7 @@ export default function App() {
             Race3D AKA Studio
           </button>
 
-          {/* Zone 2: 5 concise single-line text navigation links */}
+          {/* Zone 2: 4 concise single-line text navigation links */}
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-400">
             <button
               onClick={() => setActiveTab('simulator')}
@@ -158,6 +107,16 @@ export default function App() {
               Simulateur AKA
             </button>
             <button
+              onClick={() => setActiveTab('pits')}
+              className={`py-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                activeTab === 'pits'
+                  ? 'text-white border-b-2 border-orange-500'
+                  : 'hover:text-slate-100'
+              }`}
+            >
+              Stands & Techniciens
+            </button>
+            <button
               onClick={() => setActiveTab('multiplayer')}
               className={`py-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === 'multiplayer'
@@ -166,26 +125,6 @@ export default function App() {
               }`}
             >
               Serveur Multijoueur
-            </button>
-            <button
-              onClick={() => setActiveTab('sprites')}
-              className={`py-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeTab === 'sprites'
-                  ? 'text-white border-b-2 border-orange-500'
-                  : 'hover:text-slate-100'
-              }`}
-            >
-              Comparateur 3/4
-            </button>
-            <button
-              onClick={() => setActiveTab('pits')}
-              className={`py-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeTab === 'pits'
-                  ? 'text-white border-b-2 border-orange-500'
-                  : 'hover:text-slate-100'
-              }`}
-            >
-              Stands & Circuits
             </button>
             <button
               onClick={() => setActiveTab('cpp')}
@@ -205,7 +144,7 @@ export default function App() {
               onClick={handleDownloadPackBundle}
               className="px-4 py-2 text-xs font-semibold text-white bg-orange-600 hover:bg-orange-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              Exporter Pack C++ v1.2
+              Exporter Correctifs C++
             </button>
           </div>
         </div>
@@ -215,9 +154,8 @@ export default function App() {
       <div className="md:hidden border-b border-slate-800 px-4 py-2 overflow-x-auto flex items-center gap-2 bg-[#0E1420]">
         {[
           { id: 'simulator', label: 'Simulateur' },
+          { id: 'pits', label: 'Techniciens' },
           { id: 'multiplayer', label: 'Multijoueur' },
-          { id: 'sprites', label: 'Sprites 3/4' },
-          { id: 'pits', label: 'Stands & Circuits' },
           { id: 'cpp', label: 'Code C++' },
         ].map((item) => (
           <button
@@ -237,15 +175,7 @@ export default function App() {
         {activeTab === 'simulator' && (
           <AkaConsoleStage
             simRef={simRef}
-            spriteMode={spriteMode}
-            subStageBlend={subStageBlend}
-            steerVisRate={steerVisRate}
-            pitModeV12={pitModeV12}
             circuitAnimV12={circuitAnimV12}
-            onChangeSpriteMode={handleSelectSpriteMode}
-            onToggleSubStageBlend={handleToggleSubStageBlend}
-            onChangeSteerVisRate={handleChangeSteerVisRate}
-            onTogglePitMode={handleTogglePitMode}
             onToggleCircuitAnim={handleToggleCircuitAnim}
             multiplayerJoined={mp.joined}
             roomState={mp.roomState}
@@ -281,27 +211,9 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'sprites' && (
-          <SpriteWorkbench
-            atlas={atlas}
-            activeSpriteMode={spriteMode}
-            subStageBlend={subStageBlend}
-            steerVisRate={steerVisRate}
-            pitModeV12={pitModeV12}
-            circuitAnimV12={circuitAnimV12}
-            onSelectSpriteMode={handleSelectSpriteMode}
-            onToggleSubStageBlend={handleToggleSubStageBlend}
-            onChangeSteerVisRate={handleChangeSteerVisRate}
-            onTogglePitMode={handleTogglePitMode}
-            onToggleCircuitAnim={handleToggleCircuitAnim}
-            onLaunchSimulator={() => setActiveTab('simulator')}
-          />
-        )}
-
         {activeTab === 'pits' && (
           <PitAndCircuitGuide
             onLaunchPitTest={(trackId) => {
-              handleTogglePitMode(true);
               simRef.current.setupRace(trackId, 1, 3, false);
               simRef.current.teleportToPitApproach(0.64);
               setActiveTab('simulator');
@@ -316,6 +228,7 @@ export default function App() {
               }
               setActiveTab('simulator');
             }}
+            onOpenCppPatch={() => setActiveTab('cpp')}
           />
         )}
 
